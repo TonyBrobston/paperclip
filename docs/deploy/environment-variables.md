@@ -19,6 +19,8 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
 | `PAPERCLIP_API_URL` | (auto-derived) | Paperclip API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
+| `PAPERCLIP_ALLOW_LOCAL_API_CALLS` | `false` | Point agent runtimes at the server's own listener instead of the public origin. Set to `true` when the public origin sits behind an authenticating edge (Cloudflare Access, an SSO reverse proxy, a WAF) that a non-interactive agent cannot pass. See [Local API calls for agent runtimes](#local-api-calls-for-agent-runtimes). |
+| `PAPERCLIP_LOCAL_API_URL` | (derived loopback origin) | Explicit origin used when `PAPERCLIP_ALLOW_LOCAL_API_CALLS=true` and loopback is not the right address — for example `http://198.51.100.10:3100` when agents run in a bridged container. Ignored when the opt-in is off. |
 | `PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL` | (board public origin) | Optional HTTPS origin for native chat provider webhooks when ingress and the board use different hosts. Must have no credentials, path, query, or fragment; invalid configuration refuses startup. Used only for provider callback URLs, not board links, authentication, trusted hosts, or identity confirmation. |
 | `PAPERCLIP_RUNNER_PUBLIC_URL` | (unset) | Explicit `wss://` base URL used only when a remote `paperclip_runner` target dials Paperclip directly. Paperclip appends `/api/runner/v1/connect/<runId>`; the reverse proxy must forward WebSocket upgrades for that route. This value is never inferred from request headers. Daytona ignores it and uses provider ingress. |
 | `PAPERCLIP_RUNNER_CA_BUNDLE_PATH` | (unset) | Optional PEM CA bundle for direct runner WSS. Platform roots remain enabled. There is no insecure TLS bypass. |
@@ -37,6 +39,59 @@ runs retain their recovery path. The deprecated `enableRunnerPreviewIngress`
 key remains accepted in stored and managed configuration for version-skew
 compatibility, but it has no runtime effect. The setting has no effect on
 legacy adapters or callback bridges.
+
+### Local API calls for agent runtimes
+
+When Paperclip is reachable at a public origin that requires interactive
+authentication — Cloudflare Access, an SSO reverse proxy, a WAF challenge — the
+origin works for browsers, OAuth callbacks, and inbound webhooks but not for
+agents. An agent process has no session at that edge, so every request it makes
+to the injected `PAPERCLIP_API_URL` is answered with a login redirect instead of
+the API. Agents then cannot update issue status, post comments, reach managed MCP
+gateways, call the runtime-tools connection routes, or fetch managed GitHub
+credentials.
+
+The usual workaround is an edge bypass rule for `/api` and `/mcp` scoped to a
+source IP, which breaks as soon as the operator moves off that network and
+widens the public attack surface either way. Set this instead:
+
+```bash
+PAPERCLIP_ALLOW_LOCAL_API_CALLS=true
+```
+
+Paperclip keeps serving the public origin for everything user-facing and routes
+only the agent-facing endpoints to its own listener:
+
+| Endpoint | Consumer |
+|----------|----------|
+| `PAPERCLIP_API_URL` injected into agent processes | Agent API calls (status, comments, documents, attachments) |
+| `/mcp/*` gateway endpoints | Managed runtime MCP servers |
+| `/runtime-tools/connections/*` | `connections_search` / `connection_request` |
+| `/runtime-tools/github/credentials` | Managed GitHub credential broker (`git`/`gh` launcher) |
+
+`PAPERCLIP_AUTH_PUBLIC_BASE_URL`, `PAPERCLIP_PUBLIC_URL`, board links, OAuth
+callbacks, routine webhook URLs, and chat webhook ingress are all unaffected.
+
+By default the local origin is `http://127.0.0.1:<PORT>`. A non-loopback
+`PAPERCLIP_BIND_HOST`/`HOST` is used verbatim, since that is the only address the
+listener answers on. When the agent runtime reaches the server at some other
+address — a bridged container talking to a LAN IP, or a tailnet address — set the
+origin explicitly:
+
+```bash
+PAPERCLIP_ALLOW_LOCAL_API_CALLS=true
+PAPERCLIP_LOCAL_API_URL=http://198.51.100.10:3100
+```
+
+A non-loopback `PAPERCLIP_LOCAL_API_URL` hostname must also be accepted as a
+trusted host, so include it in `PAPERCLIP_ALLOWED_HOSTNAMES` if it is not already
+the bind host or the public hostname.
+
+The opt-in defaults to `false`, and only `true`, `1`, or `yes` enable it. It
+changes routing, not authorization: agents still present the same run-scoped JWT,
+and every request is authenticated and audited exactly as it is through the
+public origin. It also does not expose a new listener — it reuses the one the
+server already binds.
 
 ### Webhook-only chat ingress
 
@@ -195,7 +250,7 @@ These are set automatically by the server when invoking agents:
 |----------|-------------|
 | `PAPERCLIP_AGENT_ID` | Agent's unique ID |
 | `PAPERCLIP_COMPANY_ID` | Company ID |
-| `PAPERCLIP_API_URL` | Paperclip API base URL (inherits the server-level value; see Server Configuration above) |
+| `PAPERCLIP_API_URL` | Paperclip API base URL (inherits the server-level value, or the local origin when `PAPERCLIP_ALLOW_LOCAL_API_CALLS=true`; see Server Configuration above) |
 | `PAPERCLIP_API_KEY` | Short-lived JWT for API auth |
 | `PAPERCLIP_RUN_ID` | Current heartbeat run ID |
 | `PAPERCLIP_TASK_ID` | Issue that triggered this wake |

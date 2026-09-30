@@ -4533,9 +4533,16 @@ type ManagedMcpGatewayRunConfig = {
 };
 
 function configuredPaperclipApiBaseUrl(): string | null {
-  const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
+  // This base URL is handed to agent runtimes: managed MCP gateway endpoints, the
+  // runtime-tools REST routes, and the GitHub credential broker. When the operator
+  // opted into local API calls, all three have to bypass the public edge for the
+  // same reason the plain API does — an authenticating proxy redirects a
+  // non-interactive agent to a login page instead of serving the endpoint.
+  const configured =
+    readNonEmptyString(process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL) ??
+    readNonEmptyString(process.env.PAPERCLIP_API_URL);
   return configured
-    ? configured.replace(/\/+$/, "").replace(/\/api$/, "")
+    ? configured.trim().replace(/\/+$/, "").replace(/\/api$/, "")
     : null;
 }
 
