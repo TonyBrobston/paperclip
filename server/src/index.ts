@@ -104,7 +104,11 @@ import {
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
-import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import {
+  buildRuntimeApiCandidateUrls,
+  choosePrimaryRuntimeApiUrl,
+  resolveLocalRuntimeApiUrl,
+} from "./runtime-api.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -942,7 +946,16 @@ async function startServerWithDatabaseTeardown(
     port: listenPort,
   });
   const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
+  // Opt-in (PAPERCLIP_ALLOW_LOCAL_API_CALLS) path for deployments whose public
+  // origin sits behind an authenticating edge. The public origin still serves
+  // browsers, OAuth callbacks, and inbound webhooks; only agent-facing endpoints
+  // move to the local listener, which the edge cannot bounce to a login page.
+  const localRuntimeApiUrl = resolveLocalRuntimeApiUrl({
+    bindHost: runtimeListenHost,
+    port: listenPort,
+  });
   const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
+    localApiUrl: localRuntimeApiUrl,
     preferredApiUrl: configuredApiUrl,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
@@ -954,6 +967,16 @@ async function startServerWithDatabaseTeardown(
   process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
+  if (localRuntimeApiUrl) {
+    process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL = localRuntimeApiUrl;
+    logger.info(
+      `Local runtime API calls enabled; agent runtimes will call ${localRuntimeApiUrl} instead of ${configuredApiUrl}`,
+    );
+  } else {
+    // Clear an inherited value so a stale export cannot silently redirect agents
+    // once the operator turns the opt-in back off.
+    delete process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL;
+  }
 
   let startupListenerBound = false;
   try {

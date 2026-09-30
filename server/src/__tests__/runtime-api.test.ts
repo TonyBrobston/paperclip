@@ -3,6 +3,8 @@ import {
   buildRuntimeApiCandidateUrls,
   choosePrimaryRuntimeApiUrl,
   collectReachableInterfaceHosts,
+  localRuntimeApiCallsEnabled,
+  resolveLocalRuntimeApiUrl,
 } from "../runtime-api.js";
 
 describe("runtime API discovery", () => {
@@ -106,6 +108,24 @@ describe("runtime API discovery", () => {
     ]);
   });
 
+  it("leads the candidate list with the opt-in local API URL", () => {
+    expect(
+      buildRuntimeApiCandidateUrls({
+        localApiUrl: "http://127.0.0.1:3100",
+        preferredApiUrl: "https://paperclip.example.test",
+        authPublicBaseUrl: "https://paperclip.example.test",
+        allowedHostnames: ["paperclip.example.test"],
+        bindHost: "0.0.0.0",
+        port: 3100,
+        networkInterfacesMap: {},
+      }),
+    ).toEqual([
+      "http://127.0.0.1:3100",
+      "https://paperclip.example.test",
+      "https://paperclip.example.test:3100",
+    ]);
+  });
+
   it("prefers usable interface hosts and skips link-local addresses", () => {
     expect(
       collectReachableInterfaceHosts({
@@ -154,5 +174,83 @@ describe("runtime API discovery", () => {
       "192.168.6.178",
       "fd7a:115c:a1e0::8a3a:a11d",
     ]);
+  });
+});
+
+describe("local runtime API opt-in", () => {
+  it("stays disabled by default so existing deployments keep the public origin", () => {
+    expect(localRuntimeApiCallsEnabled({})).toBe(false);
+    expect(
+      resolveLocalRuntimeApiUrl({ bindHost: "0.0.0.0", port: 3100, env: {} }),
+    ).toBeNull();
+  });
+
+  it("accepts the common truthy spellings and rejects everything else", () => {
+    for (const value of ["true", "TRUE", " 1 ", "yes"]) {
+      expect(
+        localRuntimeApiCallsEnabled({ PAPERCLIP_ALLOW_LOCAL_API_CALLS: value }),
+      ).toBe(true);
+    }
+    for (const value of ["false", "0", "no", "", "maybe"]) {
+      expect(
+        localRuntimeApiCallsEnabled({ PAPERCLIP_ALLOW_LOCAL_API_CALLS: value }),
+      ).toBe(false);
+    }
+  });
+
+  it("derives a loopback origin on the real listen port for a wildcard bind host", () => {
+    expect(
+      resolveLocalRuntimeApiUrl({
+        bindHost: "0.0.0.0",
+        port: 3100,
+        env: { PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true" },
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
+  it("keeps a specific non-loopback bind host, the only address the listener answers on", () => {
+    expect(
+      resolveLocalRuntimeApiUrl({
+        bindHost: "198.51.100.10",
+        port: 3100,
+        env: { PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true" },
+      }),
+    ).toBe("http://198.51.100.10:3100");
+  });
+
+  it("honors an explicit local URL override and normalizes it to an origin", () => {
+    expect(
+      resolveLocalRuntimeApiUrl({
+        bindHost: "0.0.0.0",
+        port: 3100,
+        env: {
+          PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true",
+          PAPERCLIP_LOCAL_API_URL: "http://198.51.100.10:3100/api/",
+        },
+      }),
+    ).toBe("http://198.51.100.10:3100");
+  });
+
+  it("falls back to the derived origin when the override is malformed", () => {
+    expect(
+      resolveLocalRuntimeApiUrl({
+        bindHost: "0.0.0.0",
+        port: 3100,
+        env: {
+          PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true",
+          PAPERCLIP_LOCAL_API_URL: "not a url",
+        },
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
+  it("ignores an override when the opt-in is off", () => {
+    expect(
+      resolveLocalRuntimeApiUrl({
+        bindHost: "0.0.0.0",
+        port: 3100,
+        env: { PAPERCLIP_LOCAL_API_URL: "http://198.51.100.10:3100" },
+      }),
+    ).toBeNull();
   });
 });

@@ -3784,6 +3784,7 @@ describe("buildPaperclipEnv", () => {
   const ENV_KEYS = [
     "PAPERCLIP_API_URL",
     "PAPERCLIP_RUNTIME_API_URL",
+    "PAPERCLIP_RUNTIME_LOCAL_API_URL",
     "PAPERCLIP_LISTEN_HOST",
     "PAPERCLIP_LISTEN_PORT",
     "HOST",
@@ -3840,6 +3841,39 @@ describe("buildPaperclipEnv", () => {
           companyId: "company-1",
         });
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3200");
+      },
+    );
+  });
+
+  it("prefers the local runtime API URL over a public PAPERCLIP_API_URL", () => {
+    withEnv(
+      {
+        PAPERCLIP_RUNTIME_LOCAL_API_URL: "http://127.0.0.1:3100",
+        PAPERCLIP_API_URL: "https://paperclip.example.test",
+        PAPERCLIP_RUNTIME_API_URL: "https://paperclip.example.test",
+      },
+      () => {
+        const env = buildPaperclipEnv({
+          id: "agent-1",
+          companyId: "company-1",
+        });
+        expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+      },
+    );
+  });
+
+  it("ignores a blank local runtime API URL", () => {
+    withEnv(
+      {
+        PAPERCLIP_RUNTIME_LOCAL_API_URL: "   ",
+        PAPERCLIP_API_URL: "https://paperclip.example.test",
+      },
+      () => {
+        const env = buildPaperclipEnv({
+          id: "agent-1",
+          companyId: "company-1",
+        });
+        expect(env.PAPERCLIP_API_URL).toBe("https://paperclip.example.test");
       },
     );
   });
