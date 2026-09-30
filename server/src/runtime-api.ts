@@ -80,6 +80,62 @@ export function choosePrimaryRuntimeApiUrl(input: {
   return formatOrigin("http:", "localhost", input.port);
 }
 
+/**
+ * Whether the operator opted into local API calls for agent runtimes.
+ *
+ * A self-hosted deployment often puts an authenticating edge in front of the
+ * public origin (Cloudflare Access, an SSO reverse proxy, a WAF). That origin is
+ * the right one for browsers, OAuth callbacks, and inbound webhooks, but an
+ * agent process has no interactive session at that edge, so every request it
+ * makes to `PAPERCLIP_API_URL` is answered with a login redirect instead of the
+ * API. Opting in keeps the public origin for user-facing links and points agent
+ * runtimes at the server's own listener instead.
+ */
+export function localRuntimeApiCallsEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const raw = normalizeHost(env.PAPERCLIP_ALLOW_LOCAL_API_CALLS).toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes";
+}
+
+/**
+ * The origin agent runtimes should call when local API calls are allowed, or
+ * `null` when the operator has not opted in (the default, which leaves every
+ * existing deployment on its public origin).
+ *
+ * `PAPERCLIP_LOCAL_API_URL` overrides the derived origin for deployments where
+ * the runtime reaches the server on a specific address — a LAN IP when the agent
+ * runs in a bridged container, or a tailnet address.
+ */
+export function resolveLocalRuntimeApiUrl(input: {
+  bindHost: string;
+  port: number;
+  env?: NodeJS.ProcessEnv;
+}): string | null {
+  const env = input.env ?? process.env;
+  if (!localRuntimeApiCallsEnabled(env)) return null;
+
+  const explicit = normalizeHost(env.PAPERCLIP_LOCAL_API_URL);
+  if (explicit) {
+    try {
+      return new URL(explicit).origin;
+    } catch {
+      // A malformed override falls through to the derived origin rather than
+      // failing startup: losing the opt-in is recoverable, a dead server is not.
+    }
+  }
+
+  const bindHost = normalizeHost(input.bindHost);
+  // A wildcard or loopback listener always answers on loopback. A specific
+  // non-loopback bind host is the only address the listener answers on, so it
+  // has to be used verbatim.
+  const host =
+    !bindHost || isWildcardHost(bindHost) || isLoopbackHost(bindHost)
+      ? "127.0.0.1"
+      : bindHost;
+  return formatOrigin("http:", host, input.port);
+}
+
 export function collectReachableInterfaceHosts(input: {
   networkInterfacesMap?: NodeJS.Dict<os.NetworkInterfaceInfo[]>;
 } = {}): string[] {
@@ -109,6 +165,12 @@ export function collectReachableInterfaceHosts(input: {
 }
 
 export function buildRuntimeApiCandidateUrls(input: {
+  /**
+   * Opt-in local origin from {@link resolveLocalRuntimeApiUrl}. It leads the list
+   * because an authenticating edge in front of the public origin rejects agent
+   * runtimes outright, so falling back to it first would waste every retry.
+   */
+  localApiUrl?: string | null;
   preferredApiUrl?: string | null;
   authPublicBaseUrl?: string | null;
   allowedHostnames: string[];
@@ -129,6 +191,7 @@ export function buildRuntimeApiCandidateUrls(input: {
   })();
   const protocol = explicitOrigin ? new URL(explicitOrigin).protocol : "http:";
 
+  pushCandidate(candidates, seen, input.localApiUrl);
   pushCandidate(candidates, seen, input.preferredApiUrl);
   pushCandidate(candidates, seen, explicitOrigin);
 

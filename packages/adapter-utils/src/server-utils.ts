@@ -3233,10 +3233,17 @@ export function buildPaperclipEnv(agent: {
   );
   const runtimePort =
     process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
+  // The server exports PAPERCLIP_RUNTIME_LOCAL_API_URL only when the operator set
+  // PAPERCLIP_ALLOW_LOCAL_API_CALLS. It has to beat PAPERCLIP_API_URL because the
+  // whole point of the opt-in is that the configured public origin sits behind an
+  // authenticating edge that answers non-interactive agents with a login redirect
+  // rather than the API.
+  const localApiUrl = process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL?.trim();
   // An explicit PAPERCLIP_API_URL override must win over the URL derived from
   // authPublicBaseUrl: the derived URL can be unreachable from inside the
   // runtime container (e.g. when the public base URL is VPN/tailnet-only).
   const apiUrl =
+    (localApiUrl?.length ? localApiUrl : undefined) ??
     process.env.PAPERCLIP_API_URL ??
     process.env.PAPERCLIP_RUNTIME_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
