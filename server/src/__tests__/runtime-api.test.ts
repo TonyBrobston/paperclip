@@ -7,6 +7,7 @@ import {
   resolveLocalRuntimeApiUrl,
   runtimeCanReachLocalApi,
 } from "../runtime-api.js";
+import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
 const LOOPBACK_IPV4 = {
   address: "127.0.0.1",
@@ -252,7 +253,7 @@ describe("local runtime API opt-in", () => {
   it("falls back to IPv6 loopback for a wildcard bind on an IPv6-only host", () => {
     // That host has no 127.0.0.0/8 interface at all, so 127.0.0.1 would be an
     // address agents cannot connect to and the opt-in would simply not work.
-    for (const bindHost of ["::", "localhost", ""]) {
+    for (const bindHost of ["::", ""]) {
       expect(
         resolveLocalRuntimeApiUrl({
           bindHost,
@@ -261,6 +262,27 @@ describe("local runtime API opt-in", () => {
           networkInterfacesMap: { lo: [LOOPBACK_IPV6] },
         }),
       ).toBe("http://[::1]:3100");
+    }
+  });
+
+  it("keeps the name for a localhost bind rather than guessing which address it resolved to", () => {
+    // `server.listen(port, "localhost")` resolves the name and binds the single
+    // address that lookup returned — which can be ::1 on a dual-stack host that
+    // also has IPv4 loopback. Picking an address here would be a guess at that
+    // resolution; handing back the name lets the agent resolve it the same way.
+    for (const interfaces of [
+      { lo: [LOOPBACK_IPV4, LOOPBACK_IPV6] },
+      { lo: [LOOPBACK_IPV6] },
+      { lo: [LOOPBACK_IPV4] },
+    ]) {
+      expect(
+        resolveLocalRuntimeApiUrl({
+          bindHost: "localhost",
+          port: 3100,
+          env: { PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true" },
+          networkInterfacesMap: interfaces,
+        }),
+      ).toBe("http://localhost:3100");
     }
   });
 
@@ -392,12 +414,51 @@ describe("local runtime API reachability", () => {
     ).toBe(true);
   });
 
-  it("rejects adapters whose agent process runs outside the deployment", () => {
-    // These runtimes would resolve the server's local origin to their own host,
-    // losing every status update, comment, and runtime-tools call.
-    for (const adapterType of ["cursor_cloud", "openclaw_gateway"]) {
-      expect(runtimeCanReachLocalApi({ adapterType })).toBe(false);
+  // Classification for every adapter Paperclip ships. `true` means the agent
+  // process runs on the Paperclip host and may be handed the local origin.
+  //
+  // This is deliberately spelled out against BUILTIN_ADAPTER_TYPES rather than
+  // against the implementation's own set: asserting a hand-written list matches
+  // the list it was copied from only proves it agrees with itself. A new adapter
+  // fails the completeness check below until someone classifies it here, which
+  // is the point — an unclassified adapter must not quietly inherit a loopback
+  // origin, and the credentials that ride on it, by default.
+  const ADAPTER_REACHABILITY: Record<string, boolean> = {
+    claude_local: true,
+    codex_local: true,
+    cursor: true,
+    gemini_local: true,
+    grok_local: true,
+    hermes_local: true,
+    kimi_local: true,
+    opencode_local: true,
+    paperclip_runner: true,
+    pi_local: true,
+    process: true,
+    // Runs on hardware the operator does not control, or on another host
+    // reached over HTTP. The server's local origin resolves there to the wrong
+    // machine, losing every status update, comment, and runtime-tools call —
+    // and pointing scoped credentials at whatever does answer on that port.
+    acpx_local: false, // retired tombstone; never executes
+    cursor_cloud: false,
+    hermes_gateway: false,
+    http: false, // invokes an operator-supplied remote `url`
+    openclaw_gateway: false,
+  };
+
+  it("classifies every built-in adapter type", () => {
+    expect(new Set(Object.keys(ADAPTER_REACHABILITY))).toEqual(BUILTIN_ADAPTER_TYPES);
+  });
+
+  it("only treats adapters that run on the Paperclip host as reachable", () => {
+    for (const [adapterType, reachable] of Object.entries(ADAPTER_REACHABILITY)) {
+      expect(runtimeCanReachLocalApi({ adapterType }), adapterType).toBe(reachable);
     }
+  });
+
+  it("rejects an unknown adapter type rather than assuming it is local", () => {
+    expect(runtimeCanReachLocalApi({ adapterType: "some_future_cloud_adapter" })).toBe(false);
+    expect(runtimeCanReachLocalApi({})).toBe(false);
   });
 
   it("rejects a remote execution target even for a local adapter", () => {

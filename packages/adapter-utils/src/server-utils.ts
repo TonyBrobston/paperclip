@@ -3213,35 +3213,48 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
-export function buildPaperclipEnv(
-  agent: {
-    id: string;
-    companyId: string;
-  },
-  options?: {
-    /**
-     * Whether this runtime runs in the server's own network, so the opt-in local
-     * API origin is an address it can actually connect to.
-     *
-     * Defaults to `false`, because a remote runtime handed the server's local
-     * origin resolves it to the wrong machine and loses every API call. An
-     * adapter that spawns the agent as a child process on this host passes
-     * `true`; one that hands the environment to a cloud worker, a gateway on
-     * another host, or a remote execution target leaves it unset.
-     */
-    runtimeCanReachLocalApi?: boolean;
-  },
-): Record<string, string> {
+/**
+ * Whether the operator opted into local API calls for agent runtimes.
+ *
+ * Kept in step with `localRuntimeApiCallsEnabled` in the server's
+ * `runtime-api.ts`, which owns the canonical definition. It is restated here
+ * rather than imported because this package must not depend on `server/`, and
+ * because the accepted values are a closed set: exactly `true`, `1`, and `yes`.
+ */
+function localApiCallsOptedIn(env: NodeJS.ProcessEnv): boolean {
+  const raw = (env.PAPERCLIP_ALLOW_LOCAL_API_CALLS ?? "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes";
+}
+
+/**
+ * The Paperclip API base URL an agent runtime should call.
+ *
+ * This is the single source of truth for that choice. Anything that *tells* an
+ * agent which API base to use — a rendered prompt, a generated config file —
+ * must resolve it here rather than reading `PAPERCLIP_API_URL` directly, or it
+ * will name the public origin while the runtime's environment points at the
+ * local one, and an agent that believes the prompt is sent straight back to the
+ * authenticating edge the opt-in exists to avoid.
+ */
+export function resolveAgentFacingApiBaseUrl(options?: {
+  /**
+   * Whether this runtime runs in the server's own network, so the opt-in local
+   * API origin is an address it can actually connect to.
+   *
+   * Defaults to `false`, because a remote runtime handed the server's local
+   * origin resolves it to the wrong machine and loses every API call. An
+   * adapter that spawns the agent as a child process on this host passes
+   * `true`; one that hands the environment to a cloud worker, a gateway on
+   * another host, or a remote execution target leaves it unset.
+   */
+  runtimeCanReachLocalApi?: boolean;
+}): string {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
     if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]"))
       return `[${host}]`;
     return host;
-  };
-  const vars: Record<string, string> = {
-    PAPERCLIP_AGENT_ID: agent.id,
-    PAPERCLIP_COMPANY_ID: agent.companyId,
   };
   const runtimeHost = resolveHostForUrl(
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
@@ -3256,19 +3269,42 @@ export function buildPaperclipEnv(
   // a cloud worker or an agent behind a gateway on another host would resolve the
   // server's local address to itself and lose every API call, so it keeps the
   // public origin, whose edge a remote runtime is expected to satisfy.
-  const localApiUrl = options?.runtimeCanReachLocalApi
-    ? process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL?.trim()
-    : undefined;
+  //
+  // The opt-in is re-read here instead of trusting that the variable is absent
+  // when it is off. The server entrypoint deletes an inherited copy, but
+  // buildPaperclipEnv is a public export of this package, so an embedder that
+  // inherits the variable would otherwise route a run's credentials to a local
+  // origin the operator never opted into.
+  const localApiUrl =
+    options?.runtimeCanReachLocalApi && localApiCallsOptedIn(process.env)
+      ? process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL?.trim()
+      : undefined;
   // An explicit PAPERCLIP_API_URL override must win over the URL derived from
   // authPublicBaseUrl: the derived URL can be unreachable from inside the
   // runtime container (e.g. when the public base URL is VPN/tailnet-only).
-  const apiUrl =
+  return (
     (localApiUrl?.length ? localApiUrl : undefined) ??
     process.env.PAPERCLIP_API_URL ??
     process.env.PAPERCLIP_RUNTIME_API_URL ??
-    `http://${runtimeHost}:${runtimePort}`;
-  vars.PAPERCLIP_API_URL = apiUrl;
-  return vars;
+    `http://${runtimeHost}:${runtimePort}`
+  );
+}
+
+export function buildPaperclipEnv(
+  agent: {
+    id: string;
+    companyId: string;
+  },
+  options?: {
+    /** See `resolveAgentFacingApiBaseUrl`. */
+    runtimeCanReachLocalApi?: boolean;
+  },
+): Record<string, string> {
+  return {
+    PAPERCLIP_AGENT_ID: agent.id,
+    PAPERCLIP_COMPANY_ID: agent.companyId,
+    PAPERCLIP_API_URL: resolveAgentFacingApiBaseUrl(options),
+  };
 }
 
 export function applyPaperclipWorkspaceEnv(

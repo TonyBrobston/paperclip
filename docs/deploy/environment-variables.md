@@ -78,20 +78,34 @@ callbacks, routine webhook URLs, and chat webhook ingress are all unaffected.
 The local origin names an address in the server's own network, so it only helps a
 runtime that sits there — an agent Paperclip starts as a child process on this
 host. Agents that run elsewhere keep the public origin, because the local address
-would resolve to their machine rather than to Paperclip:
+would resolve to their machine rather than to Paperclip.
 
-- `cursor_cloud` and `openclaw_gateway` agents, which run on hardware the
-  operator does not own.
+The opt-in applies to the adapters that spawn the agent on the Paperclip host:
+`claude_local`, `codex_local`, `cursor`, `gemini_local`, `grok_local`,
+`hermes_local`, `kimi_local`, `opencode_local`, `paperclip_runner`, `pi_local`,
+and `process`. Everything else keeps the public origin, including:
+
+- `cursor_cloud`, which runs on hardware the operator does not own.
+- `hermes_gateway` and `openclaw_gateway`, which reach an agent over HTTP on
+  another host.
+- `http`, which invokes an operator-supplied remote URL.
 - Any agent on a remote execution target, including SSH and sandbox transports.
 
-Those runtimes are expected to satisfy the edge themselves (a service token at
-the proxy, or an allowlisted egress address). The opt-in does not change them.
+This is an allow-list, so an adapter nobody has classified keeps the public
+origin rather than inheriting a loopback address on a host the operator may not
+control. Those runtimes are expected to satisfy the edge themselves (a service
+token at the proxy, or an allowlisted egress address); the opt-in does not
+change them.
 
 #### The derived origin
 
 The derived local origin is `http://127.0.0.1:<PORT>`, or `http://[::1]:<PORT>`
 when the listener binds `::1` — or when it binds a wildcard on a host with no
-IPv4 loopback at all. It is deliberately always loopback: the local listener
+IPv4 loopback at all. A listener bound to the *name* `localhost` derives
+`http://localhost:<PORT>`: `listen()` resolves that name and binds the single
+address the lookup returned, which on a dual-stack host can be `::1` even though
+IPv4 loopback also exists, so the name is passed through and the agent resolves
+it the same way. It is deliberately always loopback: the local listener
 serves plain HTTP, and agents authenticate with a bearer key, so a derived LAN
 address would carry that key off the host in cleartext and silently downgrade an
 HTTPS deployment. A specific non-loopback `PAPERCLIP_BIND_HOST`/`HOST` therefore

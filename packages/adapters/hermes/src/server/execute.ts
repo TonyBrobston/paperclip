@@ -30,6 +30,7 @@ import type {
 import {
   runChildProcess,
   buildPaperclipEnv,
+  resolveAgentFacingApiBaseUrl,
   buildRuntimeToolsEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
@@ -153,10 +154,17 @@ export function buildPrompt(
   const companyName = cfgString(context.companyName) || cfgString(ctx.config?.companyName) || "";
   const projectName = cfgString(context.projectName) || cfgString(ctx.config?.projectName) || "";
 
-  // Build API URL — ensure it has the /api path
+  // Build API URL — ensure it has the /api path.
+  //
+  // The fallback resolves the same base the child environment receives from
+  // buildPaperclipEnv below. Reading PAPERCLIP_API_URL directly would print the
+  // public origin into the prompt while the process env pointed at the local
+  // one, so an agent that trusted its instructions over its environment would
+  // call the authenticating edge the opt-in exists to bypass. This adapter
+  // spawns Hermes on this host, which is why it can reach the local origin.
   let paperclipApiUrl =
     cfgString(config.paperclipApiUrl) ||
-    process.env.PAPERCLIP_API_URL ||
+    resolveAgentFacingApiBaseUrl({ runtimeCanReachLocalApi: true }) ||
     "http://127.0.0.1:3100/api";
   // Ensure /api suffix
   if (!paperclipApiUrl.endsWith("/api")) {

@@ -295,7 +295,10 @@ import type {
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { createRuntimeToolsToken } from "../runtime-tools-token.js";
-import { runtimeCanReachLocalApi as runtimeReachesLocalApi } from "../runtime-api.js";
+import {
+  localRuntimeApiCallsEnabled,
+  runtimeCanReachLocalApi as runtimeReachesLocalApi,
+} from "../runtime-api.js";
 import {
   parseObject,
   asBoolean,
@@ -4547,8 +4550,12 @@ type ManagedMcpGatewayRunConfig = {
 function configuredPaperclipApiBaseUrl(
   runtimeCanReachLocalApi = false,
 ): string | null {
+  // The opt-in is re-checked here rather than trusting the variable's presence.
+  // The server entrypoint deletes an inherited copy when the opt-in is off, but
+  // that leaves a single point of failure guarding a credential-routing
+  // decision; consulting the flag makes the opt-in hold by construction.
   const configured =
-    (runtimeCanReachLocalApi
+    (runtimeCanReachLocalApi && localRuntimeApiCallsEnabled()
       ? readNonEmptyString(process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL)
       : undefined) ?? readNonEmptyString(process.env.PAPERCLIP_API_URL);
   return configured

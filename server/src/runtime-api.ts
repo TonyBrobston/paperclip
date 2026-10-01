@@ -136,7 +136,12 @@ function hostHasIpv4Loopback(
  * - A specific loopback bind (`::1`, `127.0.0.1`) answers on that address only,
  *   so it is kept verbatim.
  * - `0.0.0.0` is an IPv4 wildcard, so IPv4 loopback is the only choice.
- * - `::`, `localhost`, and an unset bind host depend on the host's stack. A
+ * - `localhost` is a *name*, not a wildcard: `server.listen(port, "localhost")`
+ *   resolves it and binds the single address that lookup returned, which on a
+ *   dual-stack host can be `::1` even though IPv4 loopback also exists. Picking
+ *   an address here would be a guess at that resolution, so the name is kept
+ *   and the agent resolves it exactly as the listener did.
+ * - `::` and an unset bind host are wildcards and depend on the host's stack. A
  *   dual-stack `::` listener answers `127.0.0.1` through v4-mapped addresses,
  *   but an IPv6-only host has no IPv4 loopback at all, so `127.0.0.1` would
  *   hand agents an address they cannot connect to. Prefer IPv4 loopback when
@@ -150,7 +155,8 @@ function deriveLoopbackHost(
   if (normalized === "::1") return "::1";
   if (normalized === "127.0.0.1") return "127.0.0.1";
   if (normalized === "0.0.0.0") return "127.0.0.1";
-  if (!normalized || normalized === "::" || normalized === "localhost") {
+  if (normalized === "localhost") return "localhost";
+  if (!normalized || normalized === "::") {
     return hostHasIpv4Loopback(interfaces) ? "127.0.0.1" : "::1";
   }
   return null;
@@ -199,13 +205,35 @@ export function resolveLocalRuntimeApiUrl(input: {
 }
 
 /**
- * Adapter types whose agent process runs outside the operator's deployment, on
- * hardware the operator does not control: a third-party cloud worker, or an
- * agent reached through a gateway on another host. The local origin names an
- * address in the server's own network, so it resolves to the wrong machine (or
- * to nothing) from there — those runtimes keep the public origin.
+ * Adapter types that spawn their agent process on the Paperclip host, and so
+ * share the server's loopback.
+ *
+ * This is an allow-list on purpose. The inverse — naming the remote adapters —
+ * fails open: a newly added remote adapter is absent from the list by default
+ * and silently inherits a loopback origin, which is the failure this whole
+ * function exists to prevent. An adapter missing from the allow-list instead
+ * keeps today's public origin, so the cost of forgetting one is "the opt-in
+ * does not apply there" rather than "that adapter is handed an address on
+ * someone else's machine".
+ *
+ * Deliberately excluded: `cursor_cloud` (third-party cloud worker),
+ * `hermes_gateway` and `openclaw_gateway` (agent reached over HTTP on another
+ * host), `http` (invokes an operator-supplied remote `url`), and `acpx_local`
+ * (retired tombstone that never executes).
  */
-const REMOTE_RUNTIME_ADAPTER_TYPES = new Set(["cursor_cloud", "openclaw_gateway"]);
+const LOCAL_RUNTIME_ADAPTER_TYPES = new Set([
+  "claude_local",
+  "codex_local",
+  "cursor",
+  "gemini_local",
+  "grok_local",
+  "hermes_local",
+  "kimi_local",
+  "opencode_local",
+  "paperclip_runner",
+  "pi_local",
+  "process",
+]);
 
 /**
  * Whether the opt-in local API origin is reachable from a given runtime.
@@ -216,13 +244,19 @@ const REMOTE_RUNTIME_ADAPTER_TYPES = new Set(["cursor_cloud", "openclaw_gateway"
  * `http://127.0.0.1:3100` resolves that to itself, not to Paperclip, so its
  * status updates and comments fail. Such a runtime keeps `PAPERCLIP_API_URL`,
  * which it can reach and whose edge it is expected to satisfy.
+ *
+ * Unrecognized adapter types are treated as unreachable. The origin returned
+ * here carries run-scoped credentials to the managed MCP gateways, the
+ * runtime-tools routes, and the GitHub credential broker, so guessing "local"
+ * for an adapter nobody has classified would aim those at an address on a host
+ * the operator may not own.
  */
 export function runtimeCanReachLocalApi(input: {
   adapterType?: string | null;
   executionTargetKind?: string | null;
 }): boolean {
   const adapterType = normalizeHost(input.adapterType).toLowerCase();
-  if (REMOTE_RUNTIME_ADAPTER_TYPES.has(adapterType)) return false;
+  if (!LOCAL_RUNTIME_ADAPTER_TYPES.has(adapterType)) return false;
   // An absent target is local; "remote" covers SSH and sandbox transports, none
   // of which share the server's loopback.
   const targetKind = normalizeHost(input.executionTargetKind).toLowerCase();
