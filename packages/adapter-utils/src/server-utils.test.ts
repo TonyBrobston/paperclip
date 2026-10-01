@@ -3845,7 +3845,7 @@ describe("buildPaperclipEnv", () => {
     );
   });
 
-  it("prefers the local runtime API URL over a public PAPERCLIP_API_URL", () => {
+  it("prefers the local runtime API URL for a co-located runtime", () => {
     withEnv(
       {
         PAPERCLIP_RUNTIME_LOCAL_API_URL: "http://127.0.0.1:3100",
@@ -3853,11 +3853,31 @@ describe("buildPaperclipEnv", () => {
         PAPERCLIP_RUNTIME_API_URL: "https://paperclip.example.test",
       },
       () => {
-        const env = buildPaperclipEnv({
-          id: "agent-1",
-          companyId: "company-1",
-        });
+        const env = buildPaperclipEnv(
+          { id: "agent-1", companyId: "company-1" },
+          { runtimeCanReachLocalApi: true },
+        );
         expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+      },
+    );
+  });
+
+  it("keeps the public PAPERCLIP_API_URL for a runtime that cannot reach the local origin", () => {
+    withEnv(
+      {
+        PAPERCLIP_RUNTIME_LOCAL_API_URL: "http://127.0.0.1:3100",
+        PAPERCLIP_API_URL: "https://paperclip.example.test",
+      },
+      () => {
+        // A cloud worker or a gateway agent on another host resolves
+        // 127.0.0.1 to itself, so the local origin must not reach it.
+        for (const options of [undefined, { runtimeCanReachLocalApi: false }]) {
+          const env = buildPaperclipEnv(
+            { id: "agent-1", companyId: "company-1" },
+            options,
+          );
+          expect(env.PAPERCLIP_API_URL).toBe("https://paperclip.example.test");
+        }
       },
     );
   });
@@ -3869,10 +3889,10 @@ describe("buildPaperclipEnv", () => {
         PAPERCLIP_API_URL: "https://paperclip.example.test",
       },
       () => {
-        const env = buildPaperclipEnv({
-          id: "agent-1",
-          companyId: "company-1",
-        });
+        const env = buildPaperclipEnv(
+          { id: "agent-1", companyId: "company-1" },
+          { runtimeCanReachLocalApi: true },
+        );
         expect(env.PAPERCLIP_API_URL).toBe("https://paperclip.example.test");
       },
     );

@@ -110,18 +110,49 @@ function insecureLocalHttpAcknowledged(env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
+ * Whether the host has an IPv4 loopback address at all. An IPv6-only host has
+ * no `127.0.0.0/8` interface, so `127.0.0.1` is not an address anything there
+ * can connect to.
+ */
+function hostHasIpv4Loopback(
+  interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]>,
+): boolean {
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries ?? []) {
+      if (entry.family === "IPv4" && normalizeHost(entry.address).startsWith("127."))
+        return true;
+    }
+  }
+  return false;
+}
+
+/**
  * The loopback host the listener answers on, or `null` when the bind host is a
  * specific non-loopback address.
  *
- * An `::1` listener answers on IPv6 loopback only, so the derived origin has to
- * keep `::1` rather than collapse to `127.0.0.1`. A wildcard listener answers on
- * both, and `127.0.0.1` is the broadly reachable choice there.
+ * The derived host has to be one the listener actually answers on, in a family
+ * the host actually has:
+ *
+ * - A specific loopback bind (`::1`, `127.0.0.1`) answers on that address only,
+ *   so it is kept verbatim.
+ * - `0.0.0.0` is an IPv4 wildcard, so IPv4 loopback is the only choice.
+ * - `::`, `localhost`, and an unset bind host depend on the host's stack. A
+ *   dual-stack `::` listener answers `127.0.0.1` through v4-mapped addresses,
+ *   but an IPv6-only host has no IPv4 loopback at all, so `127.0.0.1` would
+ *   hand agents an address they cannot connect to. Prefer IPv4 loopback when
+ *   the host has it and fall back to `::1` when it does not.
  */
-function deriveLoopbackHost(bindHost: string): string | null {
+function deriveLoopbackHost(
+  bindHost: string,
+  interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]>,
+): string | null {
   const normalized = normalizeHost(bindHost).toLowerCase();
-  if (!normalized || isWildcardHost(normalized)) return "127.0.0.1";
   if (normalized === "::1") return "::1";
-  if (isLoopbackHost(normalized)) return "127.0.0.1";
+  if (normalized === "127.0.0.1") return "127.0.0.1";
+  if (normalized === "0.0.0.0") return "127.0.0.1";
+  if (!normalized || normalized === "::" || normalized === "localhost") {
+    return hostHasIpv4Loopback(interfaces) ? "127.0.0.1" : "::1";
+  }
   return null;
 }
 
@@ -143,6 +174,7 @@ export function resolveLocalRuntimeApiUrl(input: {
   bindHost: string;
   port: number;
   env?: NodeJS.ProcessEnv;
+  networkInterfacesMap?: NodeJS.Dict<os.NetworkInterfaceInfo[]>;
 }): string | null {
   const env = input.env ?? process.env;
   if (!localRuntimeApiCallsEnabled(env)) return null;
@@ -155,12 +187,47 @@ export function resolveLocalRuntimeApiUrl(input: {
     // failing startup: losing the opt-in is recoverable, a dead server is not.
   }
 
-  const host = deriveLoopbackHost(input.bindHost);
+  const host = deriveLoopbackHost(
+    input.bindHost,
+    input.networkInterfacesMap ?? os.networkInterfaces(),
+  );
   // A specific non-loopback bind host is the only address the listener answers
   // on, and it is reachable over cleartext HTTP from off the host, so it is not
   // derived automatically. The operator opts into it by name instead.
   if (!host) return null;
   return formatOrigin("http:", host, input.port);
+}
+
+/**
+ * Adapter types whose agent process runs outside the operator's deployment, on
+ * hardware the operator does not control: a third-party cloud worker, or an
+ * agent reached through a gateway on another host. The local origin names an
+ * address in the server's own network, so it resolves to the wrong machine (or
+ * to nothing) from there — those runtimes keep the public origin.
+ */
+const REMOTE_RUNTIME_ADAPTER_TYPES = new Set(["cursor_cloud", "openclaw_gateway"]);
+
+/**
+ * Whether the opt-in local API origin is reachable from a given runtime.
+ *
+ * `PAPERCLIP_ALLOW_LOCAL_API_CALLS` exists so a co-located agent can bypass an
+ * authenticating edge that it cannot pass. The premise only holds when the agent
+ * process runs in the server's own network: a remote worker handed
+ * `http://127.0.0.1:3100` resolves that to itself, not to Paperclip, so its
+ * status updates and comments fail. Such a runtime keeps `PAPERCLIP_API_URL`,
+ * which it can reach and whose edge it is expected to satisfy.
+ */
+export function runtimeCanReachLocalApi(input: {
+  adapterType?: string | null;
+  executionTargetKind?: string | null;
+}): boolean {
+  const adapterType = normalizeHost(input.adapterType).toLowerCase();
+  if (REMOTE_RUNTIME_ADAPTER_TYPES.has(adapterType)) return false;
+  // An absent target is local; "remote" covers SSH and sandbox transports, none
+  // of which share the server's loopback.
+  const targetKind = normalizeHost(input.executionTargetKind).toLowerCase();
+  if (targetKind && targetKind !== "local") return false;
+  return true;
 }
 
 /**

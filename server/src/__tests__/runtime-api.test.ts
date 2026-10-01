@@ -5,7 +5,27 @@ import {
   collectReachableInterfaceHosts,
   localRuntimeApiCallsEnabled,
   resolveLocalRuntimeApiUrl,
+  runtimeCanReachLocalApi,
 } from "../runtime-api.js";
+
+const LOOPBACK_IPV4 = {
+  address: "127.0.0.1",
+  family: "IPv4",
+  internal: true,
+  netmask: "255.0.0.0",
+  cidr: "127.0.0.1/8",
+  mac: "00:00:00:00:00:00",
+} as const;
+
+const LOOPBACK_IPV6 = {
+  address: "::1",
+  family: "IPv6",
+  internal: true,
+  netmask: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+  cidr: "::1/128",
+  mac: "00:00:00:00:00:00",
+  scopeid: 0,
+} as const;
 
 describe("runtime API discovery", () => {
   it("prefers the explicit public base URL for the primary runtime URL", () => {
@@ -218,6 +238,43 @@ describe("local runtime API opt-in", () => {
     ).toBe("http://[::1]:3100");
   });
 
+  it("keeps IPv4 loopback for an :: bind host on a dual-stack host", () => {
+    expect(
+      resolveLocalRuntimeApiUrl({
+        bindHost: "::",
+        port: 3100,
+        env: { PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true" },
+        networkInterfacesMap: { lo: [LOOPBACK_IPV4, LOOPBACK_IPV6] },
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
+  it("falls back to IPv6 loopback for a wildcard bind on an IPv6-only host", () => {
+    // That host has no 127.0.0.0/8 interface at all, so 127.0.0.1 would be an
+    // address agents cannot connect to and the opt-in would simply not work.
+    for (const bindHost of ["::", "localhost", ""]) {
+      expect(
+        resolveLocalRuntimeApiUrl({
+          bindHost,
+          port: 3100,
+          env: { PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true" },
+          networkInterfacesMap: { lo: [LOOPBACK_IPV6] },
+        }),
+      ).toBe("http://[::1]:3100");
+    }
+  });
+
+  it("keeps IPv4 loopback for an 0.0.0.0 bind host, which answers on IPv4 only", () => {
+    expect(
+      resolveLocalRuntimeApiUrl({
+        bindHost: "0.0.0.0",
+        port: 3100,
+        env: { PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true" },
+        networkInterfacesMap: { lo: [LOOPBACK_IPV6] },
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
   it("derives no origin for a specific non-loopback bind host rather than downgrading to cleartext", () => {
     // Deriving http://198.51.100.10:3100 would hand agents an origin that carries
     // their bearer key off the host in cleartext, downgrading an HTTPS deployment.
@@ -319,5 +376,36 @@ describe("local runtime API opt-in", () => {
         env: { PAPERCLIP_LOCAL_API_URL: "http://198.51.100.10:3100" },
       }),
     ).toBeNull();
+  });
+});
+
+describe("local runtime API reachability", () => {
+  it("treats an absent or local execution target on a local adapter as reachable", () => {
+    expect(
+      runtimeCanReachLocalApi({ adapterType: "claude_local" }),
+    ).toBe(true);
+    expect(
+      runtimeCanReachLocalApi({
+        adapterType: "codex_local",
+        executionTargetKind: "local",
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects adapters whose agent process runs outside the deployment", () => {
+    // These runtimes would resolve the server's local origin to their own host,
+    // losing every status update, comment, and runtime-tools call.
+    for (const adapterType of ["cursor_cloud", "openclaw_gateway"]) {
+      expect(runtimeCanReachLocalApi({ adapterType })).toBe(false);
+    }
+  });
+
+  it("rejects a remote execution target even for a local adapter", () => {
+    expect(
+      runtimeCanReachLocalApi({
+        adapterType: "claude_local",
+        executionTargetKind: "remote",
+      }),
+    ).toBe(false);
   });
 });

@@ -3213,10 +3213,25 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
-export function buildPaperclipEnv(agent: {
-  id: string;
-  companyId: string;
-}): Record<string, string> {
+export function buildPaperclipEnv(
+  agent: {
+    id: string;
+    companyId: string;
+  },
+  options?: {
+    /**
+     * Whether this runtime runs in the server's own network, so the opt-in local
+     * API origin is an address it can actually connect to.
+     *
+     * Defaults to `false`, because a remote runtime handed the server's local
+     * origin resolves it to the wrong machine and loses every API call. An
+     * adapter that spawns the agent as a child process on this host passes
+     * `true`; one that hands the environment to a cloud worker, a gateway on
+     * another host, or a remote execution target leaves it unset.
+     */
+    runtimeCanReachLocalApi?: boolean;
+  },
+): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -3237,8 +3252,13 @@ export function buildPaperclipEnv(agent: {
   // PAPERCLIP_ALLOW_LOCAL_API_CALLS. It has to beat PAPERCLIP_API_URL because the
   // whole point of the opt-in is that the configured public origin sits behind an
   // authenticating edge that answers non-interactive agents with a login redirect
-  // rather than the API.
-  const localApiUrl = process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL?.trim();
+  // rather than the API. It applies only to a runtime that can reach that origin:
+  // a cloud worker or an agent behind a gateway on another host would resolve the
+  // server's local address to itself and lose every API call, so it keeps the
+  // public origin, whose edge a remote runtime is expected to satisfy.
+  const localApiUrl = options?.runtimeCanReachLocalApi
+    ? process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL?.trim()
+    : undefined;
   // An explicit PAPERCLIP_API_URL override must win over the URL derived from
   // authPublicBaseUrl: the derived URL can be unreachable from inside the
   // runtime container (e.g. when the public base URL is VPN/tailnet-only).
