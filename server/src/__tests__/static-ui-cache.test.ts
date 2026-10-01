@@ -13,10 +13,17 @@ describe("staticUiCacheControl", () => {
     expect(staticUiCacheControl(path.join("/srv", "ui-dist", "sw.js"))).toBe("no-cache");
   });
 
+  it("forces revalidation for the web app manifest", () => {
+    // A cached manifest pins clients on the old `display` mode for the TTL, so
+    // a deployed installability fix looks like it never shipped.
+    expect(staticUiCacheControl(path.join("/srv", "ui-dist", "site.webmanifest"))).toBe("no-cache");
+  });
+
   it("leaves other static files on the middleware default", () => {
     expect(staticUiCacheControl(path.join("/srv", "ui-dist", "favicon.ico"))).toBeUndefined();
     expect(staticUiCacheControl(path.join("/srv", "ui-dist", "robots.txt"))).toBeUndefined();
-    // Lookalikes keep the default: only the exact worker filename is special.
+    // Lookalikes keep the default: only the exact filenames are special.
     expect(staticUiCacheControl(path.join("/srv", "ui-dist", "sw.js.map"))).toBeUndefined();
+    expect(staticUiCacheControl(path.join("/srv", "ui-dist", "site.webmanifest.bak"))).toBeUndefined();
   });
 });

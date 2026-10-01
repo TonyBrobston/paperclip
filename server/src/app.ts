@@ -995,8 +995,8 @@ export async function createApp(
       });
       // Non-hashed static files (favicon.ico, manifest, robots.txt, etc.):
       // short cache so operators who swap them out see the new version
-      // reasonably fast, with must-revalidate overrides for index.html and
-      // sw.js (see staticUiCacheControl for why those two).
+      // reasonably fast, with must-revalidate overrides for index.html,
+      // sw.js, and site.webmanifest (see staticUiCacheControl for why).
       app.use(
         express.static(uiDist, {
           maxAge: "1h",
