@@ -3248,6 +3248,21 @@ export function resolveAgentFacingApiBaseUrl(options?: {
    * another host, or a remote execution target leaves it unset.
    */
   runtimeCanReachLocalApi?: boolean;
+  /**
+   * An adapter-level API base override (e.g. the Hermes adapter's
+   * `paperclipApiUrl` config field), which the adapter's own schema documents
+   * as defaulting to `PAPERCLIP_API_URL`.
+   *
+   * It is resolved here rather than short-circuited by the caller so that a
+   * rendered prompt and the child environment cannot disagree: a caller that
+   * preferred its own config value before calling this function would print
+   * that value into the prompt while `buildPaperclipEnv` put a different base
+   * in the environment. It therefore sits in the same precedence slot as
+   * `PAPERCLIP_API_URL` — above the derived origin, below the opt-in local
+   * origin, which exists precisely because configured origins can be
+   * unreachable for a non-interactive agent.
+   */
+  configuredApiBaseUrl?: string | null;
 }): string {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
@@ -3279,11 +3294,13 @@ export function resolveAgentFacingApiBaseUrl(options?: {
     options?.runtimeCanReachLocalApi && localApiCallsOptedIn(process.env)
       ? process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL?.trim()
       : undefined;
+  const configuredApiBaseUrl = options?.configuredApiBaseUrl?.trim();
   // An explicit PAPERCLIP_API_URL override must win over the URL derived from
   // authPublicBaseUrl: the derived URL can be unreachable from inside the
   // runtime container (e.g. when the public base URL is VPN/tailnet-only).
   return (
     (localApiUrl?.length ? localApiUrl : undefined) ??
+    (configuredApiBaseUrl?.length ? configuredApiBaseUrl : undefined) ??
     process.env.PAPERCLIP_API_URL ??
     process.env.PAPERCLIP_RUNTIME_API_URL ??
     `http://${runtimeHost}:${runtimePort}`
@@ -3298,6 +3315,8 @@ export function buildPaperclipEnv(
   options?: {
     /** See `resolveAgentFacingApiBaseUrl`. */
     runtimeCanReachLocalApi?: boolean;
+    /** See `resolveAgentFacingApiBaseUrl`. */
+    configuredApiBaseUrl?: string | null;
   },
 ): Record<string, string> {
   return {

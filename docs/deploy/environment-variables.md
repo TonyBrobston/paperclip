@@ -161,6 +161,16 @@ and every request is authenticated and audited exactly as it is through the
 public origin. It also does not expose a new listener — it reuses the one the
 server already binds.
 
+Some adapters expose their own API base override in adapter config (the Hermes
+adapter's `paperclipApiUrl`, documented as defaulting to `PAPERCLIP_API_URL`).
+The local origin outranks such an override for a runtime that can reach it, for
+the same reason it outranks `PAPERCLIP_API_URL`: the opt-in exists because a
+configured origin can sit behind an edge a non-interactive agent cannot pass.
+With the opt-in off, the adapter override applies as before. Either way the
+rendered prompt and the runtime's `PAPERCLIP_API_URL` name the same base, so an
+agent that follows its instructions and one that reads its environment reach the
+same place.
+
 ### Webhook-only chat ingress
 
 Keep `PAPERCLIP_PUBLIC_URL` (or the explicit authentication public URL) pointed
