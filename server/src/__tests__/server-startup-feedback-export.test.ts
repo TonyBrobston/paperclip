@@ -885,13 +885,29 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
   it("honors an explicit PAPERCLIP_LOCAL_API_URL override", async () => {
     process.env.PAPERCLIP_ALLOW_LOCAL_API_CALLS = "true";
+    process.env.PAPERCLIP_LOCAL_API_URL = "https://198.51.100.10:3100";
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+
+    try {
+      await startServer();
+
+      expect(process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL).toBe("https://198.51.100.10:3100");
+    } finally {
+      delete process.env.PAPERCLIP_LOCAL_API_URL;
+    }
+  });
+
+  it("does not downgrade a cleartext non-loopback override without the insecure acknowledgement", async () => {
+    process.env.PAPERCLIP_ALLOW_LOCAL_API_CALLS = "true";
     process.env.PAPERCLIP_LOCAL_API_URL = "http://198.51.100.10:3100";
     process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
 
     try {
       await startServer();
 
-      expect(process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL).toBe("http://198.51.100.10:3100");
+      // The rejected override falls back to loopback rather than sending the run
+      // bearer key across a network in cleartext.
+      expect(process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL).toBe("http://127.0.0.1:3210");
     } finally {
       delete process.env.PAPERCLIP_LOCAL_API_URL;
     }

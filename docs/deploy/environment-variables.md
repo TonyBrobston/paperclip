@@ -20,7 +20,8 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
 | `PAPERCLIP_API_URL` | (auto-derived) | Paperclip API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
 | `PAPERCLIP_ALLOW_LOCAL_API_CALLS` | `false` | Point agent runtimes at the server's own listener instead of the public origin. Set to `true` when the public origin sits behind an authenticating edge (Cloudflare Access, an SSO reverse proxy, a WAF) that a non-interactive agent cannot pass. See [Local API calls for agent runtimes](#local-api-calls-for-agent-runtimes). |
-| `PAPERCLIP_LOCAL_API_URL` | (derived loopback origin) | Explicit origin used when `PAPERCLIP_ALLOW_LOCAL_API_CALLS=true` and loopback is not the right address — for example `http://198.51.100.10:3100` when agents run in a bridged container. Ignored when the opt-in is off. |
+| `PAPERCLIP_LOCAL_API_URL` | (derived loopback origin) | Explicit origin used when `PAPERCLIP_ALLOW_LOCAL_API_CALLS=true` and loopback is not the right address — for example `https://198.51.100.10:3100` when agents run in a bridged container. Must be HTTPS unless it points at loopback. Ignored when the opt-in is off. |
+| `PAPERCLIP_LOCAL_API_ALLOW_INSECURE_HTTP` | `false` | Permit a cleartext `http://` `PAPERCLIP_LOCAL_API_URL` that points at a non-loopback address. Discouraged: it sends short-lived run bearer keys unencrypted over that path. |
 | `PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL` | (board public origin) | Optional HTTPS origin for native chat provider webhooks when ingress and the board use different hosts. Must have no credentials, path, query, or fragment; invalid configuration refuses startup. Used only for provider callback URLs, not board links, authentication, trusted hosts, or identity confirmation. |
 | `PAPERCLIP_RUNNER_PUBLIC_URL` | (unset) | Explicit `wss://` base URL used only when a remote `paperclip_runner` target dials Paperclip directly. Paperclip appends `/api/runner/v1/connect/<runId>`; the reverse proxy must forward WebSocket upgrades for that route. This value is never inferred from request headers. Daytona ignores it and uses provider ingress. |
 | `PAPERCLIP_RUNNER_CA_BUNDLE_PATH` | (unset) | Optional PEM CA bundle for direct runner WSS. Platform roots remain enabled. There is no insecure TLS bypass. |
@@ -72,16 +73,37 @@ only the agent-facing endpoints to its own listener:
 `PAPERCLIP_AUTH_PUBLIC_BASE_URL`, `PAPERCLIP_PUBLIC_URL`, board links, OAuth
 callbacks, routine webhook URLs, and chat webhook ingress are all unaffected.
 
-By default the local origin is `http://127.0.0.1:<PORT>`. A non-loopback
-`PAPERCLIP_BIND_HOST`/`HOST` is used verbatim, since that is the only address the
-listener answers on. When the agent runtime reaches the server at some other
-address — a bridged container talking to a LAN IP, or a tailnet address — set the
-origin explicitly:
+The derived local origin is `http://127.0.0.1:<PORT>`, or `http://[::1]:<PORT>`
+when the listener binds `::1`. It is deliberately always loopback: the local
+listener serves plain HTTP, and agents authenticate with a bearer key, so a
+derived LAN address would carry that key off the host in cleartext and silently
+downgrade an HTTPS deployment. A specific non-loopback `PAPERCLIP_BIND_HOST`/`HOST`
+therefore derives nothing, and the server logs a warning saying so.
+
+When the agent runtime cannot reach loopback — a bridged container talking to a
+LAN IP, or a tailnet address — name the origin explicitly. It must be HTTPS
+unless it points at loopback:
 
 ```bash
 PAPERCLIP_ALLOW_LOCAL_API_CALLS=true
-PAPERCLIP_LOCAL_API_URL=http://198.51.100.10:3100
+PAPERCLIP_LOCAL_API_URL=https://198.51.100.10:3100
 ```
+
+A `PAPERCLIP_LOCAL_API_URL` that is unparseable, uses a scheme other than
+`http`/`https`, or is cleartext `http` to a non-loopback address is rejected, and
+the derived loopback origin is used instead. Startup logs the origin actually in
+use, so a rejected override is visible.
+
+If you accept the risk — a trusted private bridge where TLS is impractical — you
+can permit cleartext to a non-loopback address explicitly:
+
+```bash
+PAPERCLIP_LOCAL_API_URL=http://198.51.100.10:3100
+PAPERCLIP_LOCAL_API_ALLOW_INSECURE_HTTP=true
+```
+
+This sends short-lived run bearer keys unencrypted over that path. Prefer TLS, or
+loopback, wherever you can.
 
 A non-loopback `PAPERCLIP_LOCAL_API_URL` hostname must also be accepted as a
 trusted host, so include it in `PAPERCLIP_ALLOWED_HOSTNAMES` if it is not already

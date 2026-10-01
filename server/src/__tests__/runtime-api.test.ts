@@ -208,27 +208,94 @@ describe("local runtime API opt-in", () => {
     ).toBe("http://127.0.0.1:3100");
   });
 
-  it("keeps a specific non-loopback bind host, the only address the listener answers on", () => {
+  it("keeps IPv6 loopback for an ::1 bind host, the only address that listener answers on", () => {
+    expect(
+      resolveLocalRuntimeApiUrl({
+        bindHost: "::1",
+        port: 3100,
+        env: { PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true" },
+      }),
+    ).toBe("http://[::1]:3100");
+  });
+
+  it("derives no origin for a specific non-loopback bind host rather than downgrading to cleartext", () => {
+    // Deriving http://198.51.100.10:3100 would hand agents an origin that carries
+    // their bearer key off the host in cleartext, downgrading an HTTPS deployment.
     expect(
       resolveLocalRuntimeApiUrl({
         bindHost: "198.51.100.10",
         port: 3100,
         env: { PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true" },
       }),
-    ).toBe("http://198.51.100.10:3100");
+    ).toBeNull();
   });
 
-  it("honors an explicit local URL override and normalizes it to an origin", () => {
+  it("honors an explicit HTTPS override and normalizes it to an origin", () => {
     expect(
       resolveLocalRuntimeApiUrl({
         bindHost: "0.0.0.0",
         port: 3100,
         env: {
           PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true",
-          PAPERCLIP_LOCAL_API_URL: "http://198.51.100.10:3100/api/",
+          PAPERCLIP_LOCAL_API_URL: "https://198.51.100.10:3100/api/",
         },
       }),
+    ).toBe("https://198.51.100.10:3100");
+  });
+
+  it("honors an explicit loopback HTTP override, which never leaves the host", () => {
+    expect(
+      resolveLocalRuntimeApiUrl({
+        bindHost: "0.0.0.0",
+        port: 3100,
+        env: {
+          PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true",
+          PAPERCLIP_LOCAL_API_URL: "http://127.0.0.1:4000",
+        },
+      }),
+    ).toBe("http://127.0.0.1:4000");
+    expect(
+      resolveLocalRuntimeApiUrl({
+        bindHost: "0.0.0.0",
+        port: 3100,
+        env: {
+          PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true",
+          PAPERCLIP_LOCAL_API_URL: "http://[::1]:4000",
+        },
+      }),
+    ).toBe("http://[::1]:4000");
+  });
+
+  it("rejects a cleartext non-loopback override unless the operator acknowledges it", () => {
+    const env = {
+      PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true",
+      PAPERCLIP_LOCAL_API_URL: "http://198.51.100.10:3100",
+    };
+    expect(
+      resolveLocalRuntimeApiUrl({ bindHost: "0.0.0.0", port: 3100, env }),
+    ).toBe("http://127.0.0.1:3100");
+    expect(
+      resolveLocalRuntimeApiUrl({
+        bindHost: "0.0.0.0",
+        port: 3100,
+        env: { ...env, PAPERCLIP_LOCAL_API_ALLOW_INSECURE_HTTP: "true" },
+      }),
     ).toBe("http://198.51.100.10:3100");
+  });
+
+  it("rejects an override whose scheme cannot serve API calls", () => {
+    for (const value of ["file:///tmp/api", "ftp://198.51.100.10:3100"]) {
+      expect(
+        resolveLocalRuntimeApiUrl({
+          bindHost: "0.0.0.0",
+          port: 3100,
+          env: {
+            PAPERCLIP_ALLOW_LOCAL_API_CALLS: "true",
+            PAPERCLIP_LOCAL_API_URL: value,
+          },
+        }),
+      ).toBe("http://127.0.0.1:3100");
+    }
   });
 
   it("falls back to the derived origin when the override is malformed", () => {

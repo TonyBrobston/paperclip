@@ -107,6 +107,7 @@ import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-sh
 import {
   buildRuntimeApiCandidateUrls,
   choosePrimaryRuntimeApiUrl,
+  localRuntimeApiCallsEnabled,
   resolveLocalRuntimeApiUrl,
 } from "./runtime-api.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
@@ -976,6 +977,15 @@ async function startServerWithDatabaseTeardown(
     // Clear an inherited value so a stale export cannot silently redirect agents
     // once the operator turns the opt-in back off.
     delete process.env.PAPERCLIP_RUNTIME_LOCAL_API_URL;
+    if (localRuntimeApiCallsEnabled()) {
+      // The opt-in is on but no safe local origin came out of it, so agents stay
+      // on the public origin. Say so, or the operator sets the flag and sees the
+      // same login redirects with nothing explaining why.
+      logger.warn(
+        `PAPERCLIP_ALLOW_LOCAL_API_CALLS is set but no local API origin could be used; agent runtimes will keep calling ${configuredApiUrl}. ` +
+          `A non-loopback listener needs an explicit HTTPS PAPERCLIP_LOCAL_API_URL (see docs/deploy/environment-variables.md).`,
+      );
+    }
   }
 
   let startupListenerBound = false;

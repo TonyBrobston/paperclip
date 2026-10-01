@@ -99,13 +99,45 @@ export function localRuntimeApiCallsEnabled(
 }
 
 /**
+ * Whether the operator accepted sending run credentials over cleartext HTTP to a
+ * non-loopback address. Agents authenticate with a bearer key, so an `http://`
+ * origin that leaves the host exposes that key to anyone on the path. Loopback
+ * never leaves the host and needs no acknowledgement.
+ */
+function insecureLocalHttpAcknowledged(env: NodeJS.ProcessEnv): boolean {
+  const raw = normalizeHost(env.PAPERCLIP_LOCAL_API_ALLOW_INSECURE_HTTP).toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes";
+}
+
+/**
+ * The loopback host the listener answers on, or `null` when the bind host is a
+ * specific non-loopback address.
+ *
+ * An `::1` listener answers on IPv6 loopback only, so the derived origin has to
+ * keep `::1` rather than collapse to `127.0.0.1`. A wildcard listener answers on
+ * both, and `127.0.0.1` is the broadly reachable choice there.
+ */
+function deriveLoopbackHost(bindHost: string): string | null {
+  const normalized = normalizeHost(bindHost).toLowerCase();
+  if (!normalized || isWildcardHost(normalized)) return "127.0.0.1";
+  if (normalized === "::1") return "::1";
+  if (isLoopbackHost(normalized)) return "127.0.0.1";
+  return null;
+}
+
+/**
  * The origin agent runtimes should call when local API calls are allowed, or
  * `null` when the operator has not opted in (the default, which leaves every
- * existing deployment on its public origin).
+ * existing deployment on its public origin), or when no safe local origin can be
+ * derived.
  *
- * `PAPERCLIP_LOCAL_API_URL` overrides the derived origin for deployments where
- * the runtime reaches the server on a specific address — a LAN IP when the agent
- * runs in a bridged container, or a tailnet address.
+ * The local listener serves plain HTTP, so a derived origin stays on loopback:
+ * deriving a LAN address would hand agents an `http://` origin that carries their
+ * bearer key across a network, silently downgrading an HTTPS deployment. A
+ * deployment whose runtime cannot reach loopback — an agent in a bridged
+ * container, or one on a tailnet — names the address explicitly with
+ * `PAPERCLIP_LOCAL_API_URL`, which must be HTTPS unless it points at loopback or
+ * the operator also sets `PAPERCLIP_LOCAL_API_ALLOW_INSECURE_HTTP`.
  */
 export function resolveLocalRuntimeApiUrl(input: {
   bindHost: string;
@@ -117,23 +149,42 @@ export function resolveLocalRuntimeApiUrl(input: {
 
   const explicit = normalizeHost(env.PAPERCLIP_LOCAL_API_URL);
   if (explicit) {
-    try {
-      return new URL(explicit).origin;
-    } catch {
-      // A malformed override falls through to the derived origin rather than
-      // failing startup: losing the opt-in is recoverable, a dead server is not.
-    }
+    const override = parseLocalApiOverride(explicit, env);
+    if (override) return override;
+    // A rejected override falls through to the derived origin rather than
+    // failing startup: losing the opt-in is recoverable, a dead server is not.
   }
 
-  const bindHost = normalizeHost(input.bindHost);
-  // A wildcard or loopback listener always answers on loopback. A specific
-  // non-loopback bind host is the only address the listener answers on, so it
-  // has to be used verbatim.
-  const host =
-    !bindHost || isWildcardHost(bindHost) || isLoopbackHost(bindHost)
-      ? "127.0.0.1"
-      : bindHost;
+  const host = deriveLoopbackHost(input.bindHost);
+  // A specific non-loopback bind host is the only address the listener answers
+  // on, and it is reachable over cleartext HTTP from off the host, so it is not
+  // derived automatically. The operator opts into it by name instead.
+  if (!host) return null;
   return formatOrigin("http:", host, input.port);
+}
+
+/**
+ * The normalized origin for a `PAPERCLIP_LOCAL_API_URL` value, or `null` when it
+ * is unusable: unparseable, a non-HTTP scheme such as `file:` that cannot serve
+ * API calls, or cleartext HTTP to a non-loopback address without the explicit
+ * insecure acknowledgement.
+ */
+function parseLocalApiOverride(value: string, env: NodeJS.ProcessEnv): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+
+  if (parsed.protocol === "http:") {
+    const host = normalizeHost(parsed.hostname).replace(/^\[|\]$/g, "");
+    if (!isLoopbackHost(host) && !insecureLocalHttpAcknowledged(env)) return null;
+  }
+
+  return parsed.origin;
 }
 
 export function collectReachableInterfaceHosts(input: {
