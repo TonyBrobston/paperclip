@@ -1753,3 +1753,23 @@ Chromium. The test starts its own loopback Vite server and mocks API responses;
 it needs no running Paperclip instance or provider credentials. The same spec lives
 in the default `test:e2e` discovery tree, so the existing Chrome CI shards run it
 on pull requests.
+
+## Install on Android
+
+Serve Paperclip over HTTPS with a certificate trusted by the phone. Open the
+instance in Chrome on Android, then use the browser menu's **Add to Home screen**
+(or **Install app**) action and select **Install** when offered. Launch Paperclip
+from the installed app icon. It opens in its own window without the browser tab
+bar. Normal browser visits still work.
+
+If an existing home-screen shortcut still opens a browser tab after deployment,
+remove that shortcut, reload the site, and install it again. Chrome may take time
+to update an existing installation's manifest. A plain HTTP LAN address does not
+meet the secure-context requirement.
+
+To verify a deployment, use Chrome DevTools **Application > Manifest**. Confirm
+that `/site.webmanifest` has `display: standalone`, its start URL and scope are
+`/`, and both Android icons load. On Android, launch the installed app and check
+that company and issue navigation stay in the app window. Login and reload should
+continue to work. Agent actions still require a connection to the server; this
+installation setting does not add offline task execution.
