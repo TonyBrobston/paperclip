@@ -44,7 +44,7 @@ import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./
 import { claimQueuedNativeReviewRun } from "./native-runtime/native-review-dispatch.js";
 import { buildNativeReviewRequest } from "./native-runtime/native-review-prompt.js";
 import {
-  legacyExecutionNeedsReconciliation,
+  legacyExecutionNeedsReconciliationWithEvidence,
   settleInterruptedNativeBootstrap,
   terminalizeLegacyExecution,
 } from "./legacy-execution-recovery.js";
@@ -3560,6 +3560,27 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
       )
     )
   end
+`.as("resultJson");
+
+// Execution admission needs retained server receipts even when presentation
+// projection omits resultJson (SQL_ASCII or oversized provider output). Select
+// only the evidence used by eligibility; never retrieve provider diagnostics.
+const heartbeatRunExecutionEvidenceColumn = sql<Record<string, unknown> | null>`
+  case when ${heartbeatRuns.resultJson} is null then null else jsonb_build_object(
+    'startupCancellation', ${heartbeatRuns.resultJson} -> 'startupCancellation',
+    'startupPreparationSettledAt', ${heartbeatRuns.resultJson} -> 'startupPreparationSettledAt',
+    'stopReason', ${heartbeatRuns.resultJson} -> 'stopReason',
+    'timeoutSource', ${heartbeatRuns.resultJson} -> 'timeoutSource',
+    'workspaceRestoreFailure', ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure',
+    'executionCancellation', ${heartbeatRuns.resultJson} -> 'executionCancellation',
+    'nativeCancellation', ${heartbeatRuns.resultJson} -> 'nativeCancellation',
+    'cancelledByActorType', ${heartbeatRuns.resultJson} -> 'cancelledByActorType',
+    'cancelledByUserId', ${heartbeatRuns.resultJson} -> 'cancelledByUserId',
+    'conversationContinuation', ${heartbeatRuns.resultJson} -> 'conversationContinuation',
+    'cancellation', ${heartbeatRuns.resultJson} -> 'cancellation',
+    'acpToolInventoryComplete', ${heartbeatRuns.resultJson} -> 'acpToolInventoryComplete',
+    'acpPendingToolCount', ${heartbeatRuns.resultJson} -> 'acpPendingToolCount'
+  ) end
 `.as("resultJson");
 
 const heartbeatRunSafeColumns = {
@@ -10412,7 +10433,7 @@ export function heartbeatService(
         !(await remoteExecutionHasStopped(db, run.companyId, run.id))) return;
     const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     if (!issueId) return;
-    const currentRun = run.runtimeMode === "native" ? await getRun(run.id) : null;
+    const currentRun = run.runtimeMode === "native" ? await getRun(run.id, { includeExecutionEvidence: true }) : null;
     const [coordinator] = currentRun ? await db.select({ phase: nativeRunFinalizations.phase,
       leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
@@ -10427,7 +10448,7 @@ export function heartbeatService(
       await acknowledgedNativeStopExecutionHasStopped(db, currentRun) &&
       !(await getExecutionBlocker(db, run.companyId, issueId));
     const legacyContinuation = run.runtimeMode === "legacy" &&
-      hasConversationContinuationPolicy((await getRun(run.id))?.resultJson) &&
+      hasConversationContinuationPolicy((await getRun(run.id, { includeExecutionEvidence: true }))?.resultJson) &&
       !(await getExecutionBlocker(db, run.companyId, issueId));
     if (run.runtimeMode !== "native" && run.runtimeMode !== "legacy") return;
     const pending = await db.select().from(agentWakeupRequests).where(and(
@@ -10658,7 +10679,7 @@ export function heartbeatService(
       const blocker = await getExecutionBlocker(db, wake.companyId, issueId);
       const sourceId = blocker?.runId;
       if (!sourceId || !isUuidLike(sourceId)) continue;
-      const run = await getRun(sourceId);
+      const run = await getRun(sourceId, { includeExecutionEvidence: true });
       if (!run || run.companyId !== wake.companyId || run.agentId !== wake.agentId) continue;
       if (canContinueCancelledRun(run)) {
         await resumeSavedLegacyComments(wake.companyId, wake.id).catch(err => {
@@ -10759,18 +10780,17 @@ export function heartbeatService(
 
   async function getRun(
     runId: string,
-    opts?: { unsafeFullResultJson?: boolean },
+    opts?: { unsafeFullResultJson?: boolean; includeExecutionEvidence?: boolean },
   ) {
     const safeForLegacyEncoding =
       !opts?.unsafeFullResultJson && (await hasUnsafeTextProjectionDatabase());
+    const columns = opts?.unsafeFullResultJson
+      ? getTableColumns(heartbeatRuns)
+      : safeForLegacyEncoding ? heartbeatRunSqlAsciiSafeColumns : heartbeatRunSafeColumns;
     return db
-      .select(
-        opts?.unsafeFullResultJson
-          ? getTableColumns(heartbeatRuns)
-          : safeForLegacyEncoding
-            ? heartbeatRunSqlAsciiSafeColumns
-            : heartbeatRunSafeColumns,
-      )
+      .select(opts?.includeExecutionEvidence
+        ? { ...columns, resultJson: heartbeatRunExecutionEvidenceColumn }
+        : columns)
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
@@ -11799,7 +11819,7 @@ export function heartbeatService(
             "Native execution recovery owns this provider failure; a quota monitor cannot start a replacement.",
           );
         }
-        if (legacyExecutionNeedsReconciliation(sourceRun)) {
+        if (await legacyExecutionNeedsReconciliationWithEvidence(db, sourceRun)) {
           await terminalizeLegacyExecution({
             db,
             run: sourceRun,
@@ -12940,7 +12960,7 @@ export function heartbeatService(
     }
     const updated =
       previousStatus &&
-      legacyExecutionNeedsReconciliation({
+      await legacyExecutionNeedsReconciliationWithEvidence(db, {
         ...previousStatus,
         status,
         ...patch,
@@ -13030,7 +13050,7 @@ export function heartbeatService(
     }
     const updated =
       previousStatus &&
-      legacyExecutionNeedsReconciliation({
+      await legacyExecutionNeedsReconciliationWithEvidence(db, {
         ...previousStatus,
         status,
         ...patch,
@@ -14547,7 +14567,7 @@ export function heartbeatService(
     // Native sessions have their own fenced same-run controller. Legacy
     // bootstrap recovery shares the durable delay and incident counter with
     // transient retries; process loss must not open a second retry budget.
-    if (run.runtimeMode === "native" || legacyExecutionNeedsReconciliation(run))
+    if (run.runtimeMode === "native" || await legacyExecutionNeedsReconciliationWithEvidence(db, run))
       return null;
     const scheduled = await scheduleBoundedRetryForRun(run, agent, { now });
     return scheduled.outcome === "scheduled" ? scheduled.run : null;
@@ -15522,7 +15542,7 @@ export function heartbeatService(
       };
     }
 
-    if (legacyExecutionNeedsReconciliation(run)) {
+    if (await legacyExecutionNeedsReconciliationWithEvidence(db, run)) {
       return {
         outcome: "not_scheduled" as const,
         reason:
@@ -25852,7 +25872,7 @@ export function heartbeatService(
             await scheduleBoundedRetryForRun(livenessRun, agent);
           } else if (
             outcome === "failed" &&
-            !legacyExecutionNeedsReconciliation(livenessRun)
+            !(await legacyExecutionNeedsReconciliationWithEvidence(db, livenessRun))
           ) {
             await scheduleInteractionContinuationInfrastructureRetryIfEligible(
               livenessRun,
@@ -26945,7 +26965,7 @@ export function heartbeatService(
     }
 
     if (opts.failedRunId) {
-      const failed = await getRun(opts.failedRunId);
+      const failed = await getRun(opts.failedRunId, { includeExecutionEvidence: true });
       if (opts.requestedByActorType !== "user" || !opts.requestedByActorId ||
           reason !== "retry_failed_run" || source !== "on_demand" || triggerDetail !== "manual" ||
           !failed || failed.companyId !== agent.companyId || failed.agentId !== agentId ||
