@@ -34,6 +34,21 @@ authenticating edge that challenges those three requests blocks the install
 independently of this manifest value, and the symptom is identical. That part
 is deployment configuration, not a code change, so it is not in the table.
 
+## What the fork does not carry
+
+Every row above costs conflicts on each upstream merge — the 2026-10-09 refresh
+produced fourteen, all in the local-API surface. So a change earns a row only
+when the deployment needs it *and* upstream will not take it as-is. A fix that
+is correct for everyone belongs upstream, where it arrives through the next
+refresh instead of being re-merged forever.
+
+Recorded example: [#4](https://github.com/TonyBrobston/paperclip/pull/4) made
+`/site.webmanifest` revalidate instead of sitting on its one-hour TTL, while
+`index.html` and `sw.js` already revalidate. The observation is legitimate and
+entirely generic, with nothing fork-specific in it, so it was closed here on
+2026-10-09 rather than becoming a fork-local `server/` divergence. The branch
+`fix/revalidate-web-app-manifest` is kept for an upstream submission.
+
 ## Refreshing from upstream
 
 Merge upstream into the fork. Never reset `master` to `upstream/master` or force
