@@ -55,6 +55,8 @@ import {
   settledRunChildren,
   splitTranscriptAtAnchors,
   transcriptToTaskChatItems,
+  runtimeRequestSegmentContext,
+  reconcileSegmentRuntimeRequests,
   type SettledTurnMergeMeta,
 } from "@/components/task-chat/transcript-adapter";
 import { TaskChatDescriptionBubble } from "@/components/task-chat/TaskChatDescriptionBubble";
@@ -1637,7 +1639,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "native_runner_timed_out"
             : "native_runner_process_exited");
         const label =
-          code === "native_provider_approval_required" && source.status === "failed"
+          code === "native_provider_model_rejected" && source.status === "failed"
+            ? "Model unavailable"
+            : code === "native_provider_approval_required" && source.status === "failed"
             ? "Approval required"
             : code === "native_provider_usage_limit" && source.status === "failed"
             ? "Usage limit reached"
@@ -1659,7 +1663,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               : code === "native_provider_approval_required"
                 ? "This operation requires approval, but this runner has no interactive approval handler. Review the operation and update the agent's permission setting before retrying."
                 : code === "native_provider_model_rejected"
-                ? "The provider rejected the selected model. Check the model ID and your account's access, save the agent configuration, then retry. View the run for the provider's full error."
+                ? `${meta?.error || "The provider rejected the selected model."} Choose a supported model or clear the task's model override, then retry.`
                 : code === "native_provider_usage_limit" &&
                     source.status === "failed"
                   ? "The model provider has reached its current usage limit. Try again after the limit resets."
@@ -1720,7 +1724,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           ? workspaceRestoreMarkerDetail({ result: meta?.resultJson, savedPlan, hasResponse: sourceHasPresentationComment || Boolean(acceptedSummary) })
           : aiRequest
           ? aiRequest.status === "pending"
-            ? "The selected AI account is unavailable. Fix it in the connection card."
+            ? "Use the connection card below to continue."
             : "This run stopped because its AI account was unavailable."
           : source.status === "cancelled"
             ? code === "execution_reconciliation_required"
@@ -1740,15 +1744,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             id,
             kind: "marker",
             variant: "interrupted",
-            label: restoreFailed ? "Workspace restore failed" : source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+            label: restoreFailed ? "Workspace restore failed" : aiRequest?.status === "pending" ? "AI connection needed" : source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
             runId: source.status === "cancelled" ? undefined : source.id,
+            ...(aiRequest?.status === "pending" ? { retryable: false } : {}),
             ...(restoreFailed ? {
               retryable: meta?.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive",
               collapsible: true,
               runHref: meta?.agentId ? `/agents/${encodeURIComponent(agentMap?.get(meta.agentId)?.urlKey ?? meta.agentId)}/runs/${encodeURIComponent(source.id)}` : undefined,
               planHref: savedPlan ? "#document-plan" : undefined,
             } : {}),
-            tone: source.status === "cancelled" ? "neutral" : "error",
+            tone: source.status === "cancelled" || aiRequest?.status === "pending" ? "neutral" : "error",
             detail,
           },
         });
@@ -1865,12 +1870,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         startSlotMs,
         timelineAnchors,
       );
+      const runtimeRequests = runtimeRequestSegmentContext(entries, {
+        runId: source.id, agentName: meta?.agentName, running: false,
+      });
       const projectedSegments = segments.map((segment) => {
-        const parsedTranscript = transcriptToTaskChatItems(segment.entries, {
+        const parsedTranscript = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems(segment.entries, {
           runId: source.id,
           agentName: meta?.agentName,
           running: false,
-        });
+        }), segment.entries, runtimeRequests);
         const parsed =
           source.id === planDocumentSourceRunId && planTurnItem
             ? embedPlanDocumentAtWriteBoundary(parsedTranscript, planTurnItem)
@@ -2013,13 +2021,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           startSlotMs,
           timelineAnchors,
         );
+        const runtimeRequests = runtimeRequestSegmentContext(entries, {
+          runId: liveRun.id, agentName: liveRun.agentName, running: true,
+        });
         for (const [segmentIndex, segment] of segments.slice(0, -1).entries()) {
           if (segment.entries.length === 0) continue;
-          const parsedTranscript = transcriptToTaskChatItems(segment.entries, {
+          const parsedTranscript = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems(segment.entries, {
             runId: liveRun.id,
             agentName: liveRun.agentName,
             running: false,
-          });
+          }), segment.entries, runtimeRequests);
           const parsed =
             liveRun.id === planDocumentSourceRunId && planTurnItem
               ? embedPlanDocumentAtWriteBoundary(parsedTranscript, planTurnItem)
@@ -2248,7 +2259,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // A fresh array is produced on every render. Track every presentation field
   // that can change without changing the entry count or text length so channel,
   // lifecycle, result status, and usage-only updates invalidate the projection.
-  const tailEntryContentKey = tailEntries.reduce((key, entry) => {
+  const tailEntryContentKey = tailAllEntries.reduce((key, entry) => {
     const textIdentity = "text" in entry ? entry.text : "";
     const contentIdentity = "content" in entry ? entry.content : "";
     const channelIdentity = "channel" in entry ? (entry.channel ?? "") : "";
@@ -2260,8 +2271,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       entry.kind === "result"
         ? `${entry.subtype}:${entry.inputTokens}:${entry.outputTokens}:${entry.cachedTokens}:${entry.costUsd}`
         : "";
-    return `${key}|${entry.kind}:${channelIdentity}:${lifecycleIdentity}:${statusIdentity}:${usageIdentity}:${textIdentity}:${contentIdentity}`;
-  }, String(tailEntries.length));
+    const requestIdentity = entry.kind === "runtime_request" ? JSON.stringify(entry) : "";
+    return `${key}|${entry.kind}:${channelIdentity}:${lifecycleIdentity}:${statusIdentity}:${usageIdentity}:${textIdentity}:${contentIdentity}:${requestIdentity}`;
+  }, String(tailAllEntries.length));
   const tailContentKey = `${tailSegmentStartMs ?? "run-start"}:${tailEntryContentKey}`;
   const blockerContentKey = blockerLinks
     ? `${blockerLinks.directBlocker.id}:${blockerLinks.ultimateBlocker?.id ?? ""}`
@@ -2338,11 +2350,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const tailItems = useMemo(
     () => {
       if (!tailRunId) return [];
-      const parsed = transcriptToTaskChatItems(tailEntries, {
+      const runtimeRequests = runtimeRequestSegmentContext(tailAllEntries, {
+        runId: tailRunId, agentName: tailAgentName, running: tailStreaming,
+      });
+      const parsed = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems(tailEntries, {
         runId: tailRunId,
         agentName: tailAgentName,
         running: tailStreaming,
-      });
+      }), tailEntries, runtimeRequests, tailStreaming);
       return tailPlanItem
         ? embedPlanDocumentAtWriteBoundary(parsed, tailPlanItem)
         : parsed;

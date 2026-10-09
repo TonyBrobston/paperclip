@@ -29,9 +29,13 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=jira"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=asana"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
-    expect(canEnterAppsConnect(new URLSearchParams("source=context7"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=context7"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=zapier"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=model-provider"))).toBe(false);
+    for (const source of ["responses-api", "messages-api", "chat-completions-api", "bedrock", "local", "google", "openrouter"]) {
+      expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(true);
+    }
     expect(canEnterAppsConnect(new URLSearchParams("byo=1"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("byo=1&source=zapier"))).toBe(false);
   });
@@ -50,6 +54,13 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=slack"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=slack&reconnect=connection-1"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown&reconnect=connection-1"))).toBe(false);
+  });
+
+  it("admits hidden providers only for known-provider retained setup routes", () => {
+    expect(canEnterAppsConnect(new URLSearchParams("source=monday"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=monday&resume=connection-1"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=monday&reconnect=connection-1"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=unknown&resume=connection-1"))).toBe(false);
   });
 
   it("builds a generic source deep link", () => {

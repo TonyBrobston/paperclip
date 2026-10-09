@@ -42,6 +42,91 @@ afterEach(async () => {
 });
 
 describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", () => {
+  it("sends only bounded process-loss evidence without leaking it into another capture", async () => {
+    const Sentry = sentryPackage!;
+    const events: Array<Record<string, unknown>> = [];
+    vi.stubEnv("SENTRY_DSN_BACKEND", "https://public@example.invalid/1");
+    vi.doMock("../peer-version-check.js", () => ({ checkExactPeerVersions: () => ({ ok: true }) }));
+    vi.doMock("@sentry/node", () => ({
+      ...Sentry,
+      init: (options: Record<string, unknown>) => Sentry.init({
+        ...options,
+        transport: () => ({ send: async () => ({}), flush: async () => true }),
+        beforeSend: (event: Record<string, unknown>) => { events.push(event); return event; },
+      }),
+    }));
+    vi.resetModules();
+    const { sentryReady, captureRunFailure, captureException } = await import("../sentry.js");
+    await sentryReady;
+    const diagnostics = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics({
+      errorCode: "process_lost", resultJson: { processLossDiagnostic: {
+        pidRecorded: true, groupRecorded: false, localCheck: "not_observed_alive", retryEligible: true,
+        runPredatesObserver: true, observerUptimeMs: 30_000, lastOutputAgeMs: 120_000,
+        pid: "private-process-identity", path: "/private-process-path", prompt: "private-process-prompt",
+      } },
+    } as unknown as typeof heartbeatRuns.$inferSelect, {}));
+    captureRunFailure({
+      taskId: "11111111-1111-4111-8111-111111111111", runId: "22222222-2222-4222-8222-222222222222",
+      errorMessage: "Process lost -- server may have restarted", errorCode: "process_lost",
+      agentAdapter: "fixture-adapter", runStatus: "failed", exitCode: null, signal: null, diagnostics,
+    });
+    captureException(new Error("unrelated process-loss fixture"));
+    await Sentry.flush(2000);
+    expect(events).toHaveLength(2);
+    const failure = events.find(event => (event.tags as Record<string, unknown>)?.error_code === "process_lost");
+    expect(failure).toMatchObject({ contexts: { run_execution: {
+      processLossPidRecorded: true, processLossGroupRecorded: false, processLossLocalCheck: "not_observed_alive",
+      processLossRetryEligible: true, processLossRunPredatesObserver: true,
+      processLossObserverUptimeMs: 30_000, processLossLastOutputAgeMs: 120_000,
+    } } });
+    expect(JSON.stringify(events)).not.toContain("private-process-");
+    const unrelated = events.find(event => event !== failure);
+    expect(unrelated).not.toHaveProperty("contexts.run_execution");
+    expect(unrelated).not.toHaveProperty("contexts.run_failure");
+  });
+
+  it("keeps portfolio diagnostics bounded and isolated from unrelated captures", async () => {
+    const Sentry = sentryPackage!;
+    const events: Array<Record<string, unknown>> = [];
+    vi.stubEnv("SENTRY_DSN_BACKEND", "https://public@example.invalid/1");
+    vi.doMock("../peer-version-check.js", () => ({ checkExactPeerVersions: () => ({ ok: true }) }));
+    vi.doMock("@sentry/node", () => ({
+      ...Sentry,
+      init: (options: Record<string, unknown>) => Sentry.init({
+        ...options,
+        transport: () => ({ send: async () => ({}), flush: async () => true }),
+        beforeSend: (event: Record<string, unknown>) => { events.push(event); return event; },
+      }),
+    }));
+    vi.resetModules();
+    const { sentryReady, captureException } = await import("../sentry.js");
+    const { CloudPortfolioError } = await import("../services/cloud-portfolio-error.js");
+    await sentryReady;
+    const failure = new CloudPortfolioError("upstream", {
+      phase: "fetch", elapsedMs: 270, upstreamStatus: null,
+    }, new TypeError("private-portfolio-message", { cause: { code: "ECONNRESET", token: "private-portfolio-token" } }));
+    Object.assign(failure, {
+      cause: new Error("private-portfolio-cause"),
+      request: { url: "https://private-portfolio.invalid", headers: { cookie: "private-portfolio-cookie" } },
+    });
+    Object.defineProperty(failure, "diagnostics", { value: { extra: "private-portfolio-replacement" } });
+    captureException(failure);
+    captureException(new Error("unrelated portfolio fixture"));
+    await Sentry.flush(2000);
+    expect(events).toHaveLength(2);
+    const captured = events.find((event) => (event.exception as { values: Array<{ value: string }> }).values.some((entry) => entry.value === failure.message));
+    expect(captured).toMatchObject({
+      tags: { error_code: "cloud_portfolio_failure" }, fingerprint: ["{{ default }}"],
+      contexts: { cloud_portfolio: { phase: "fetch", elapsedMs: 270, upstreamStatus: null, networkCode: "ECONNRESET" } },
+    });
+    expect((captured!.exception as { values: unknown[] }).values).toHaveLength(1);
+    expect(JSON.stringify(events)).not.toContain("private-portfolio-");
+    const unrelated = events.find((event) => event !== captured)!;
+    expect(unrelated).not.toHaveProperty("contexts.cloud_portfolio");
+    expect(unrelated).not.toHaveProperty("tags.error_code");
+    expect(unrelated).not.toHaveProperty("fingerprint");
+  });
+
   it.each([
     { phase: "workspace_restore", phaseElapsedMs: 60_123, expectedPhase: "workspace_restore", expectedElapsedMs: 60_123 },
     { phase: "private-provider-phase", phaseElapsedMs: 100, expectedPhase: "unknown", expectedElapsedMs: null },
@@ -293,4 +378,64 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
     expect(unrelated).not.toHaveProperty("contexts.run_failure");
     expect(unrelated).not.toHaveProperty("tags.error_code");
   });
+  it("sends only validated transfer and RPC evidence, isolated from unrelated captures", async () => {
+    const Sentry = sentryPackage!;
+    const events: Array<Record<string, unknown>> = [];
+    vi.stubEnv("SENTRY_DSN_BACKEND", "https://public@example.invalid/1");
+    vi.doMock("../peer-version-check.js", () => ({ checkExactPeerVersions: () => ({ ok: true }) }));
+    vi.doMock("@sentry/node", () => ({ ...Sentry,
+      init: (options: Record<string, unknown>) => Sentry.init({ ...options,
+        transport: () => ({ send: async () => ({}), flush: async () => true }),
+        beforeSend: (event: Record<string, unknown>) => { events.push(event); return event; },
+      }),
+    }));
+    vi.resetModules();
+    const { sentryReady, captureRunFailure, captureException } = await import("../sentry.js");
+    await sentryReady;
+    for (const known of [true, false]) {
+      const error = Object.freeze(new Error("private-transfer-message"));
+      // Worker/typed-host propagation has its own real RPC round-trip test.
+      // This narrow contract exercises the host receipt through the real Sentry
+      // transport without requiring plugin builds or dependency lifecycle scripts.
+      const evidence = {
+        transferStep: known ? "archive_create" : "private-transfer-path",
+        transferFailureKind: known ? "command_failed" : "private-transfer-command",
+        rpcCode: known ? -32002 : -12345,
+        cause: { token: "private-transfer-token" }, output: "private-transfer-output",
+      };
+      const logs: string[] = [];
+      const restore = createWorkspaceRestoreTeardown({ stagedRuntime: {
+        restoreWorkspace: progress => withWorkspaceRestoreDiagnostics("workspace", () =>
+          withWorkspaceRestoreStep("workspace_transfer", async () => { throw preserveWorkspaceRestoreErrorDiagnostic(error, { exitCode: 2 }, evidence); }), progress),
+      }, onLog: async (_stream, line) => { logs.push(line); }, startMessage: "Restoring workspace\n", failurePrefix: "Workspace restore failed" });
+      const outcome = await restore();
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error("Expected transfer fixture failure");
+      expect(outcome.diagnostic?.rpcCode).toBe(known ? -32002 : undefined);
+      expect(JSON.stringify({ outcome, logs })).not.toContain("private-transfer-");
+      const diagnostics = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics({ resultJson: {
+        workspaceRestoreFailure: outcome.code, workspaceRestoreDiagnostic: { ...outcome.diagnostic,
+          message: "private-transfer-persisted", cause: { token: "private-transfer-token" },
+        },
+      } } as unknown as typeof heartbeatRuns.$inferSelect, {}));
+      captureRunFailure({ taskId: "11111111-1111-4111-8111-111111111111", runId: "22222222-2222-4222-8222-222222222222",
+        errorMessage: "Workspace restore failed. Workspace files need recovery.", errorCode: "workspace_restore_failed",
+        agentAdapter: "fixture-adapter", runStatus: "failed", exitCode: 1, signal: null, diagnostics,
+      });
+      await Sentry.flush(2000);
+      const execution = (events.at(-1)?.contexts as Record<string, Record<string, unknown>>).run_execution;
+      expect(execution.workspaceRestoreTransferStep).toBe(known ? "archive_create" : undefined);
+      expect(execution.workspaceRestoreTransferFailureKind).toBe(known ? "command_failed" : undefined);
+      expect(execution.workspaceRestoreRpcCode).toBe(known ? -32002 : undefined);
+      expect(execution.workspaceRestoreExitCode).toBe(2);
+    }
+    captureException(new Error("Unrelated transfer fixture"));
+    await Sentry.flush(2000);
+    expect(events).toHaveLength(3);
+    expect(events[2]).not.toHaveProperty("contexts.run_execution");
+    expect(events[2]).not.toHaveProperty("contexts.run_failure");
+    expect(events[2]).not.toHaveProperty("tags.error_code");
+    expect(JSON.stringify(events)).not.toContain("private-transfer-");
+  });
+
 });

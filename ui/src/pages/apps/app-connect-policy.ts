@@ -67,6 +67,7 @@ export function canEnterAppsConnect(
     );
   }
   const source = searchParams.get("source") ?? "";
+  if (["google-ai", "gateway"].includes(source)) return true;
   // Router connectors are registered by installed plugins, not the static
   // catalog. AppsConnect resolves this reserved slug against the host gallery
   // before rendering the pool wizard; unknown/uninstalled routers show its
@@ -80,7 +81,11 @@ export function canEnterAppsConnect(
   ) return false;
   // A retained connection may belong to a provider hidden from fresh catalog
   // setup. Admit only known providers here; the setup flow then proves the
-  // exact reconnect target is visible to the selected company before rendering.
-  if (getConnectableAppDefinition(source) && searchParams.get("reconnect")?.trim()) return true;
+  // exact reconnect or incomplete-draft target belongs to the selected company
+  // and matches this provider before resolving the hidden definition.
+  if (
+    getConnectableAppDefinition(source)
+    && (searchParams.get("reconnect")?.trim() || searchParams.get("resume")?.trim())
+  ) return true;
   return source === "agentmail" || chatConnectorsEnabled ? appSupportsCatalogSetup(entry) : appSupportsToolCatalogSetup(entry);
 }

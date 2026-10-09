@@ -42,6 +42,14 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
 }));
 
+vi.mock("../services/authorization.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/authorization.js")>();
+  return {
+    ...actual,
+    issueReadSqlCondition: vi.fn(async () => ({}) as any),
+  };
+});
+
 vi.mock("../services/agent-action-audit.js", () => ({
   agentActionAuditService: () => mockAgentActionAuditService,
 }));
@@ -101,7 +109,7 @@ async function requestApp(
   }
 }
 
-describe.sequential("activity routes", () => {
+describe("activity routes", () => {
   beforeEach(() => {
     for (const mock of Object.values(mockActivityService)) mock.mockReset();
     for (const mock of Object.values(mockHeartbeatService)) mock.mockReset();
@@ -219,6 +227,7 @@ describe.sequential("activity routes", () => {
       entityType: undefined,
       entityId: undefined,
       limit: 100,
+      readCondition: expect.anything(),
     });
   });
 
@@ -237,6 +246,7 @@ describe.sequential("activity routes", () => {
       entityType: "issue",
       entityId: undefined,
       limit: 500,
+      readCondition: expect.anything(),
     });
   });
 
