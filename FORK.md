@@ -69,27 +69,42 @@ git log --oneline --no-merges upstream/master..master
 Every change in the table must still be in that list. If one is missing, the
 merge dropped it; fix the merge before pushing.
 
-### What CI does on a refresh pull request
+### A refresh is not merged by its own pull request
 
-A refresh raised as a pull request cannot go fully green, and that is expected
-rather than a reason to stop:
+A refresh pull request can never go green, so do not ask a reviewer to merge
+one. Raise it to collect the CI signal, then land the reviewed tip by pushing
+`master`. Every refresh before this one is a direct merge commit on `master`.
 
-- **`ci / policy` fails.** Its "Block manual lockfile edits" step rejects any
-  pull request whose diff touches `pnpm-lock.yaml`. Upstream refreshes always
-  touch it, because upstream's own `chore(lockfile)` commits are part of what is
-  being merged. The step is written for feature branches and only skips for head
-  ref `chore/refresh-lockfile` and for Dependabot.
-- **`ci / verify` and `ci / e2e` fail with it.** Both are aggregator gates that
-  require `policy` to succeed. Read their logs before believing them: they print
-  each input, and on a refresh every substantive one (typecheck, general tests,
-  runner verification, build, docker context integrity, e2e shards) reads
+Why the pull request is permanently red:
+
+- **`ci / policy` rejects it.** The "Block manual lockfile edits" step fails any
+  pull request whose diff touches `pnpm-lock.yaml`, because CI owns the
+  lockfile. A refresh always touches it — upstream's own `chore(lockfile)`
+  commits are part of what is being merged.
+- **Its one exemption cannot be borrowed.** The step skips for head ref
+  `chore/refresh-lockfile`, but `.github/workflows/refresh-lockfile.yml` force
+  pushes that branch on every push to `master`. Naming a refresh branch that way
+  to dodge the check means the automation overwrites the refresh.
+- **`ci / verify` and `ci / e2e` fail with `policy`.** Both are aggregator gates
+  that require it, so one structural failure reads as three red checks. Their
+  logs print each input: on a refresh every substantive one (typecheck, general
+  tests, runner verification, build, docker context integrity, e2e shards) reads
   `success` while only `POLICY_RESULT` reads `failure`.
-- **`review` fails** until Dependency graph is enabled for this fork in
-  Settings → Code security. That is a repository setting, unrelated to the
-  merge.
+- **`review` fails** until Dependency graph is enabled for this fork under
+  Settings → Code security. That is a repository setting on a fork, it is not
+  settable through the REST API, and it is unrelated to the merge.
 
-So judge a refresh on the substantive checks — typecheck, the sharded general
-tests, build, and runner verification — not on the overall red X.
+Raise the pull request anyway, because it is the only thing that runs the test
+suite: `pr.yml` triggers on `pull_request` only, and no workflow runs the general
+tests on a push to `master`. Judge the refresh on those substantive checks, then:
+
+```sh
+git push origin master:master   # fast-forward master to the reviewed tip
+```
+
+and close the pull request, pointing at the commit that landed. `master` is not
+branch protected, so this needs no override — but the reviewer should never be
+the one deciding which red X is safe to ignore.
 
 ## Checking that a branch is really in `master`
 
