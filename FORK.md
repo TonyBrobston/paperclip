@@ -96,15 +96,34 @@ Why the pull request is permanently red:
 
 Raise the pull request anyway, because it is the only thing that runs the test
 suite: `pr.yml` triggers on `pull_request` only, and no workflow runs the general
-tests on a push to `master`. Judge the refresh on those substantive checks, then:
+tests on a push to `master`. Judge the refresh on those substantive checks, then
+fast-forward `master` onto the exact tip CI covered:
 
 ```sh
-git push origin master:master   # fast-forward master to the reviewed tip
+git fetch origin
+git merge-base --is-ancestor origin/master <reviewed-tip>   # must pass
+git push origin <reviewed-tip>:refs/heads/master \
+  --force-with-lease=refs/heads/master:<current-master>
 ```
 
-and close the pull request, pointing at the commit that landed. `master` is not
-branch protected, so this needs no override — but the reviewer should never be
-the one deciding which red X is safe to ignore.
+The ancestry check keeps this a fast-forward rather than a rewrite, and the
+lease fails the push instead of overwriting someone else's work if `master`
+moved since the check. `master` is not branch protected, so this needs no
+override — but the reviewer should never be the one deciding which red X is safe
+to ignore.
+
+There is nothing to close afterwards. Pushing the head commits onto the base
+branch makes GitHub mark the pull request **merged**, not closed, so the review
+and its CI run stay attached to the commits that shipped. Any earlier pull
+request whose commits the refresh carries is marked merged by the same push.
+
+Worked example, the 2026-10-09 refresh: `master` went from `d2ea9a6ec` to
+`6256574f1`, picking up 146 upstream commits through `3fc64c515`. Fourteen
+conflicts, all in the local-API surface — upstream had added an `identity`
+parameter to `buildPaperclipEnv` and moved the MCP and broker base-URL helpers
+into `heartbeat/run-preparation.ts`. [#7](https://github.com/TonyBrobston/paperclip/pull/7)
+collected the CI signal and [#5](https://github.com/TonyBrobston/paperclip/pull/5)
+went merged along with it.
 
 ## Checking that a branch is really in `master`
 
