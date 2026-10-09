@@ -127,10 +127,30 @@ went merged along with it.
 
 ## Checking that a branch is really in `master`
 
+Ask whether the branch carries any fork-local commit `master` is missing:
+
 ```sh
 git fetch origin
+git log --oneline --no-merges origin/master..origin/<branch>
+```
+
+Empty output means the deployment already builds everything that branch adds.
+A merged pull request is the usual reason it comes out empty, but it is the
+commit range, not the pull request state, that says what the deployment builds.
+
+The stricter ancestry form asks whether the branch *tip* is in `master`:
+
+```sh
 git merge-base --is-ancestor origin/<branch> origin/master && echo in-master
 ```
 
-A merged pull request is the usual reason this passes, but it is the ancestry
-check, not the pull request state, that says what the deployment will build.
+Prefer the range. The ancestry check gives a false negative on any branch that
+is still being maintained after it merged: merging `upstream/master` into a
+stale feature branch puts a commit on its tip that `master` does not have, and
+the check then reports the feature as missing when nothing is missing.
+`feat/allow-local-runtime-api-calls` is in exactly that state — its tip
+`45481fd81` is an upstream merge made after [#1](https://github.com/TonyBrobston/paperclip/pull/1)
+landed, while the feature itself has been on `master` since 2026-09-30.
+
+Branches whose work is on `master` are better deleted than refreshed. Keeping
+one alive invites a second copy of the same change to grow on it.
