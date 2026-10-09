@@ -54,6 +54,28 @@ git log --oneline --no-merges upstream/master..master
 Every change in the table must still be in that list. If one is missing, the
 merge dropped it; fix the merge before pushing.
 
+### What CI does on a refresh pull request
+
+A refresh raised as a pull request cannot go fully green, and that is expected
+rather than a reason to stop:
+
+- **`ci / policy` fails.** Its "Block manual lockfile edits" step rejects any
+  pull request whose diff touches `pnpm-lock.yaml`. Upstream refreshes always
+  touch it, because upstream's own `chore(lockfile)` commits are part of what is
+  being merged. The step is written for feature branches and only skips for head
+  ref `chore/refresh-lockfile` and for Dependabot.
+- **`ci / verify` and `ci / e2e` fail with it.** Both are aggregator gates that
+  require `policy` to succeed. Read their logs before believing them: they print
+  each input, and on a refresh every substantive one (typecheck, general tests,
+  runner verification, build, docker context integrity, e2e shards) reads
+  `success` while only `POLICY_RESULT` reads `failure`.
+- **`review` fails** until Dependency graph is enabled for this fork in
+  Settings → Code security. That is a repository setting, unrelated to the
+  merge.
+
+So judge a refresh on the substantive checks — typecheck, the sharded general
+tests, build, and runner verification — not on the overall red X.
+
 ## Checking that a branch is really in `master`
 
 ```sh
