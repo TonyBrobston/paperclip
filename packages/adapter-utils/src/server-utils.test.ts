@@ -3814,7 +3814,7 @@ describe("buildPaperclipEnv", () => {
     // child environment come from one decision.
     withEnv({ PAPERCLIP_API_URL: "https://public.example.test" }, () => {
       const options = { configuredApiBaseUrl: "https://configured.example.test" };
-      const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" }, options);
+      const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" }, undefined, options);
       expect(env.PAPERCLIP_API_URL).toBe("https://configured.example.test");
       expect(env.PAPERCLIP_API_URL).toBe(resolveAgentFacingApiBaseUrl(options));
     });
@@ -3833,6 +3833,7 @@ describe("buildPaperclipEnv", () => {
       () => {
         const env = buildPaperclipEnv(
           { id: "agent-1", companyId: "company-1" },
+          undefined,
           {
             runtimeCanReachLocalApi: true,
             configuredApiBaseUrl: "https://configured.example.test",
@@ -3848,6 +3849,7 @@ describe("buildPaperclipEnv", () => {
       for (const configuredApiBaseUrl of [undefined, null, "", "   "]) {
         const env = buildPaperclipEnv(
           { id: "agent-1", companyId: "company-1" },
+          undefined,
           { configuredApiBaseUrl },
         );
         expect(env.PAPERCLIP_API_URL).toBe("https://public.example.test");
@@ -3886,6 +3888,7 @@ describe("buildPaperclipEnv", () => {
       () => {
         const env = buildPaperclipEnv(
           { id: "agent-1", companyId: "company-1" },
+          undefined,
           { runtimeCanReachLocalApi: true },
         );
         expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
@@ -3917,6 +3920,7 @@ describe("buildPaperclipEnv", () => {
         ]) {
           const env = buildPaperclipEnv(
             { id: "agent-1", companyId: "company-1" },
+            undefined,
             options,
           );
           expect(env.PAPERCLIP_API_URL).toBe(resolveAgentFacingApiBaseUrl(options));
@@ -3941,6 +3945,7 @@ describe("buildPaperclipEnv", () => {
           else process.env.PAPERCLIP_ALLOW_LOCAL_API_CALLS = optIn;
           const env = buildPaperclipEnv(
             { id: "agent-1", companyId: "company-1" },
+            undefined,
             { runtimeCanReachLocalApi: true },
           );
           expect(env.PAPERCLIP_API_URL, `opt-in=${String(optIn)}`).toBe(
@@ -3963,6 +3968,7 @@ describe("buildPaperclipEnv", () => {
         for (const options of [undefined, { runtimeCanReachLocalApi: false }]) {
           const env = buildPaperclipEnv(
             { id: "agent-1", companyId: "company-1" },
+            undefined,
             options,
           );
           expect(env.PAPERCLIP_API_URL).toBe("https://paperclip.example.test");
@@ -3980,6 +3986,7 @@ describe("buildPaperclipEnv", () => {
       () => {
         const env = buildPaperclipEnv(
           { id: "agent-1", companyId: "company-1" },
+          undefined,
           { runtimeCanReachLocalApi: true },
         );
         expect(env.PAPERCLIP_API_URL).toBe("https://paperclip.example.test");
