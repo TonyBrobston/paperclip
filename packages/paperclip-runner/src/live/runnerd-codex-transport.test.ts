@@ -34,6 +34,7 @@ import type {
   PrpStructuredRunResult,
   PrpTerminalState,
 } from "../protocol/replay-contract.js";
+import { PRP_PROTOCOL_VERSION } from "../protocol/replay-contract.js";
 import { executeNativeSession } from "../native-session-runtime.js";
 import { redactCapabilityEvidenceData } from "./evidence-redaction.js";
 import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
@@ -41,6 +42,7 @@ import { parsePaperclipQuestionSet } from "../contracts/question-set.js";
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
 import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import * as durableControlPlane from "../control-plane/durable-prp-control-plane.js";
+import * as codexCommandRuntime from "../drivers/codex/codex-command.js";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -54,6 +56,10 @@ import {
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
   createCodexTaskEnvelope,
 } from "../contracts/codex.js";
+import {
+  PRP_BLOCK_TOOL_DESCRIPTION,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
+} from "../contracts/completion-result.js";
 import {
   CodexAppServerDriver,
   codexSemanticToolSpecs,
@@ -228,7 +234,7 @@ it("replaces an owned v1 runner with fresh v2 authorization before warm attachme
       async () => {
         expect(handles).toHaveLength(2);
         const state = await runnerState();
-        expect(state.lastConnectionProtocolVersion).toBe(2);
+        expect(state.lastConnectionProtocolVersion).toBe(PRP_PROTOCOL_VERSION);
         expect(state.v2ReplayEvents).toEqual({});
         expect(state.outbox).toEqual([]);
         expect(core.activeRunnerConnectionCount()).toBe(1);
@@ -1336,14 +1342,19 @@ it("includes ACPX terminal tools in the authenticated bridge catalog", () => {
   });
 });
 
-it("preserves answer and internal wait descriptions in the serialized native tool catalog", () => {
+it.each(["codex", "opencode", "claude_managed", "aws_agentcore", "acpx"] as const)("preserves answer and internal wait descriptions in the serialized native %s tool catalog", (provider) => {
   const catalog = JSON.parse(
-    JSON.stringify(authorizedToolSetForProvider("codex", codexSemanticToolSpecs())),
+    JSON.stringify(authorizedToolSetForProvider(provider, codexSemanticToolSpecs())),
   );
   const finish = catalog.operations.find(
     (operation: { operationId: string }) =>
       operation.operationId === "paperclip_finish",
   );
+  const block = catalog.operations.find(
+    (operation: { operationId: string }) => operation.operationId === "paperclip_block",
+  );
+  expect(finish.description).toBe(PRP_COMPLETION_TOOL_DESCRIPTION);
+  expect(block.description).toBe(PRP_BLOCK_TOOL_DESCRIPTION);
   expect(finish.inputSchema.properties.summary.description).toContain(
     "complete user-facing answer",
   );
@@ -1928,6 +1939,108 @@ it("denies the isolated Codex home without denying a remote execution workspace"
   expect(serialized).not.toContain('"/workspaces/task"="none"');
   expect(serialized).not.toContain('"/workspaces/task/.codex"="none"');
   expect(serialized).toContain('\":workspace_roots\"={\".\"=\"write\"}');
+});
+
+it.each(["installed", "explicit"] as const)("records the selected %s Codex command before launch", async (selection) => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-codex-command-selection-"));
+  const command = join(root, "codex");
+  const runnerBinary = join(root, "runnerd");
+  await writeFile(command, "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+  await writeFile(runnerBinary, "unexecuted fixture artifact", { mode: 0o700 });
+  const resolver = vi.spyOn(codexCommandRuntime, "resolveCodexCommand").mockReturnValue(command);
+  let template: Record<string, unknown> | null = null;
+  const launch = vi.fn(() => { throw new Error("A provider process must not start in this fixture"); });
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    provider: "codex", runnerBinary, stateDirectory: root, sourceCodexHome: "",
+    environment: { PATH: "/missing-ambient-codex" },
+    ...(selection === "explicit" ? { codexCommand: command } : {}),
+    controlPlaneRegistration: async (authority) => {
+      template = structuredClone(authority.store.state.runAttachTemplate!);
+      throw new Error("fixture_stop_before_runner_launch");
+    },
+    runnerProcessLauncher: launch,
+  });
+  try {
+    await expect(transport.request("thread/start", { cwd: root, model: "gpt-6.1-sol", dynamicTools: [] }))
+      .rejects.toThrow("fixture_stop_before_runner_launch");
+    expect(template).toMatchObject({ provider: { command, model: "gpt-6.1-sol" } });
+    expect(JSON.stringify(template)).toContain(`${JSON.stringify(command).replaceAll('"', '\\"')}=\\"read\\"`);
+    if (selection === "explicit") expect(resolver).not.toHaveBeenCalled();
+    else expect(resolver).toHaveBeenCalledExactlyOnceWith(undefined, { PATH: "/missing-ambient-codex" }, root);
+    expect(launch).not.toHaveBeenCalled();
+  } finally {
+    resolver.mockRestore();
+    await transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("rejects remote Codex without a guest executable before resolving controller dependencies", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-runner-remote-codex-command-"));
+  const runnerBinary = join(root, "runnerd");
+  await writeFile(runnerBinary, "unexecuted fixture artifact", { mode: 0o700 });
+  const resolver = vi.spyOn(codexCommandRuntime, "resolveCodexCommand").mockImplementation(() => {
+    throw new Error("Controller package resolution must not authorize a guest executable");
+  });
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    provider: "codex", runnerBinary, stateDirectory: root, sourceCodexHome: "",
+    runnerFilesystemRoot: "/workspaces/task/.paperclip-runtime/session",
+  });
+  try {
+    await expect(transport.request("thread/start", { cwd: "/workspaces/task", model: "gpt-6.1-sol", dynamicTools: [] }))
+      .rejects.toThrow("runner_remote_provider_artifact_incompatible: remote Codex omitted its qualified guest executable");
+    expect(resolver).not.toHaveBeenCalled();
+  } finally {
+    resolver.mockRestore();
+    await transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it.each(["missing", "changed"] as const)("reuses the recorded Codex command when dependency discovery is %s during resume", async (discovery) => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-codex-recorded-command-"));
+  const command = join(root, "recorded-codex");
+  const replacement = join(root, "replacement-codex");
+  const runnerBinary = join(root, "runnerd");
+  await writeFile(command, "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+  await writeFile(runnerBinary, "unexecuted fixture artifact", { mode: 0o700 });
+  const priorIdentity = { runnerInstanceId: "runner-command", environmentLeaseId: "lease-command", normalizedSessionId: "session-command",
+    runId: "run-prior", turnId: "turn-prior", itemId: "item-prior" };
+  const nextIdentity = { ...priorIdentity, runId: "run-next", turnId: "turn-next", itemId: "item-next" };
+  const core = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity: priorIdentity,
+    expectedRunnerVersion: "fixture", expectedRunnerDigest: "sha256:" + createHash("sha256").update(await readFile(runnerBinary)).digest("hex") });
+  core.persistRunAttachTemplate({ provider: { kind: "codex", command, args: [], model: "gpt-6.1-sol" }, workspace: { cwd: root } });
+  await core.stop();
+  await mkdir(join(root, "runner"), { mode: 0o700 });
+  await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1", ...priorIdentity, lifecycle: "suspended" }), { mode: 0o600 });
+  const resolver = vi.spyOn(codexCommandRuntime, "resolveCodexCommand").mockImplementation(() => {
+    if (discovery === "missing") throw new Error("The current dependency is missing");
+    return replacement;
+  });
+  let template: Record<string, unknown> | null = null;
+  const launch = vi.fn(() => { throw new Error("A provider process must not start in this fixture"); });
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    provider: "codex", runnerBinary, stateDirectory: root, sourceCodexHome: "", prpIdentity: nextIdentity,
+    environment: { PATH: "/missing-ambient-codex" },
+    controlPlaneRegistration: async (authority) => {
+      template = structuredClone(authority.store.state.commands.find(command => command.type === "run.attach")?.payload ?? null);
+      throw new Error("fixture_stop_before_resumed_runner_launch");
+    },
+    runnerProcessLauncher: launch,
+  });
+  try {
+    await expect(transport.request("thread/read", { threadId: "provider-prior" }))
+      .rejects.toThrow("fixture_stop_before_resumed_runner_launch");
+    expect(template).toMatchObject({ provider: { command, model: "gpt-6.1-sol" } });
+    expect(JSON.stringify(template)).toContain(`${JSON.stringify(command).replaceAll('"', '\\"')}=\\"read\\"`);
+    expect(JSON.stringify(template)).not.toContain(replacement);
+    expect(resolver).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  } finally {
+    resolver.mockRestore();
+    await transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 it("rejects remote OpenCode before spawn when provider-pack paths are absent", async () => {
@@ -4154,7 +4267,9 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
   );
   const tracePath = join(traceDirectory, "trace.ndjson");
   const bundle = createCapabilityRunnerdCodexTransport({
-    runnerBinary: defaultCapabilityRunnerdBinary(),
+    // Qualification builds a debug daemon for this exact source. Its selected
+    // binary must win over any separately staged product/runtime artifact.
+    runnerBinary: process.env.PAPERCLIP_STOCK_PREFLIGHT_RUNNERD ?? defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(traceDirectory, "--structured-activity"),
     stateDirectory: join(traceDirectory, "state"),
@@ -7528,7 +7643,7 @@ it.each([true, false])("preserves prepared OpenCode cleanup errors (primary fail
   expect((failure as Error).message).not.toContain("fixture-secret");
 });
 
-it("preserves prepared input through runnerd and the real OpenCode proxy boundary", async () => {
+it("preserves prepared input and completion feedback through runnerd and the real OpenCode proxy boundary", async () => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-prepared-opencode-"));
   // GitHub-hosted Linux toolcache Node can be group-writable, unlike the AWS
   // fleet. Qualify an owned copy with strict permissions, never chmod the host
@@ -7578,6 +7693,8 @@ it("preserves prepared input through runnerd and the real OpenCode proxy boundar
     objective: "Preserve the prepared task.", contractRevision: "prepared-v1",
     criteria: [{ id: "objective", requirement: "Keep this request unchanged." }],
   });
+  let completionCalls = 0;
+  const feedback = "Include [Saved document](/PAP/issues/PAP-1#document-plan) in your final response.";
   const driver = new CodexAppServerDriver({
     taskEnvelope: task,
     conversationMode: "prepared",
@@ -7585,24 +7702,37 @@ it("preserves prepared input through runnerd and the real OpenCode proxy boundar
     transportFactory: () => bundle.transport,
     workingDirectoryAuthority: "remote_runner",
     environment: { PAPERCLIP_WORKSPACE_CWD: root },
+    completionFeedback: async () => {
+      completionCalls += 1;
+      if (completionCalls === 1) throw new Error("Keep the task's required document link in the final response.");
+      return feedback;
+    },
   });
   let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
   const prepared = JSON.stringify({
     schema: "paperclip.native-model-envelope.v3",
-    task: { prompt: "Keep this request unchanged." },
+    task: { prompt: "Keep this completion-feedback request unchanged." },
     completionContract: { revision: "prepared-v1", criteria: task.completionContract.criteria },
   });
   await withPreparedOpenCodeCleanup({
     run: async () => {
       session = await driver.openSession({ runId: "prepared-opencode", normalizedSessionId: "prepared-opencode", workingDirectory: root });
       await session.startTurn({ message: { role: "user", text: prepared } });
+      const events: PrpEvent[] = [];
       for await (const event of session.events()) {
+        events.push(event);
         if (event.eventType === "turn.completed") break;
       }
+      expect(completionCalls).toBe(2);
+      expect(events.filter(event => event.eventType === "run.result.proposed")).toHaveLength(1);
       const sessionRoots = (await readdir(runtime, { withFileTypes: true })).filter((entry) => entry.isDirectory());
       expect(sessionRoots).toHaveLength(1);
       const requests = (await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-prompt-requests.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
       expect(requests.map((request) => request.parts)).toEqual([[{ type: "text", text: prepared }]]);
+      const outcomes = JSON.parse(await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-completion-feedback.json"), "utf8"));
+      expect(outcomes).toHaveLength(2);
+      expect(outcomes[0].result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("required document link") }] });
+      expect(outcomes[1].result).toMatchObject({ content: [{ text: expect.stringContaining(feedback) }] });
     },
     closeSession: async () => { await session?.close(); },
     closeTransport: () => bundle.transport.close(),

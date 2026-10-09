@@ -421,6 +421,20 @@ describe("capability-gated connection tool refresh", () => {
     expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, refreshTools: true, toolRefreshOnResume: false })).toBeNull();
   });
 
+  it.each(["add", "edit", "remove"])("replaces sessions when connection instructions %s, even with live tool refresh", (change) => {
+    const block = (text: string) => ({ text, digest: createHash("sha256").update(text).digest("hex") });
+    const previous = execution(previousRunId);
+    const current = execution(currentRunId);
+    if (change !== "add") previous.runtimeContext.connectionInstructions = block("Prior connection instructions.");
+    if (change !== "remove") current.runtimeContext.connectionInstructions = block("Current connection instructions.");
+    previous.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(previous.runtimeContext);
+    current.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(current.runtimeContext);
+    const prior = previousRun({ nativeExecutionInput: previous });
+    expect(rebindNativeSessionCheckpoint({ previousRun: prior, currentExecution: current, toolRefreshOnResume: true, refreshTools: true })).toBeNull();
+    current.runtimeContext = previous.runtimeContext;
+    expect(rebindNativeSessionCheckpoint({ previousRun: prior, currentExecution: current })).not.toBeNull();
+  });
+
   it("preserves instruction and identity fences even during a supported refresh", () => {
     const current = execution(currentRunId);
     current.runtimeContext.instructions.bundle.digest = "b".repeat(64);
@@ -1876,6 +1890,12 @@ describe("rebindNativeSessionCheckpoint", () => {
         "sha256:5b7b302db36f7ed6686f9ea1ba70bbf79ebd7fabf86953b548d966a2bc38b648",
     },
     {
+      contract: "native completion tool guidance",
+      // Deployed v13 local catalog before canonical finish/block descriptions.
+      retainedFingerprint:
+        "sha256:68a51d34e091c55ee5d0d2b563153454dd727d72db16e6a27c358d342ae489c9",
+    },
+    {
       contract: "task-bound human-input description",
       // Deployed v9 still advertises the generic mock-task question description.
       retainedFingerprint:
@@ -2105,10 +2125,17 @@ describe("rebindNativeSessionCheckpoint", () => {
   });
 
   it("retains provider identity but clears prior turn and event state", () => {
+    const prior = previousRun();
+    const profile = prior.runnerProfileJson as Record<string, unknown>;
+    const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
+    checkpoint.governedWait = { sourceEvent: { runId: previousRunId, turnId: "old-turn" }, result: { reportedWorkDisposition: "yielded" } };
+    const before = structuredClone(prior);
     const rebound = rebindNativeSessionCheckpoint({
-      previousRun: previousRun(),
+      previousRun: prior,
       currentExecution: execution(currentRunId),
     });
+    expect(rebound?.governedWait).toBeUndefined();
+    expect(prior).toEqual(before);
     expect(rebound).toMatchObject({
       sessionId: "provider-thread-123",
       providerSessionId: "provider-thread-123",
