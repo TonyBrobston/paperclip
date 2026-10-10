@@ -22,15 +22,17 @@ jobs:
         with:
           ref: master
 
-      # Needs the repository's dependency graph, which a fork does not inherit:
-      # there the action hard-fails with "Dependency review is not supported on
-      # this repository" and takes the whole run red — on `pull_request_target`,
-      # which means a failure mail to the fork owner for every PR. Enabling the
-      # graph on a fork would also turn on Dependabot alert mail for the entire
-      # monorepo, so gate the step on the canonical repository instead, the
-      # same `github.repository` check docker.yml uses for upstream-only steps.
+      # Needs the repository's dependency graph. A public fork has one, so this
+      # does run and report there; a private fork does not, and the action then
+      # hard-fails with "Dependency review is not supported on this repository",
+      # taking the whole run red — on `pull_request_target`, which means a
+      # failure mail to the fork owner for every PR. Keep the step enabled
+      # everywhere so a fork still gets the finding, but let a fork absorb that
+      # infrastructure failure instead of reporting it as a review failure.
+      # Upstream keeps it blocking: the expression is false on the canonical
+      # repository, the same `github.repository` check docker.yml uses.
       - name: Dependency Review
-        if: github.repository == 'paperclipai/paperclip'
+        continue-on-error: ${{ github.repository != 'paperclipai/paperclip' }}
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           base-ref: ${{ github.event.pull_request.base.sha }}
