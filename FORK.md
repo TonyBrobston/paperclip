@@ -13,6 +13,7 @@ even when its pull request is open and green.
 | --- | --- | --- |
 | `PAPERCLIP_ALLOW_LOCAL_API_CALLS`: send agent-facing requests to the container's own listener, so agent runtimes behind an authenticating edge can still reach the API, the MCP gateways, and the GitHub credential broker | `feat/allow-local-runtime-api-calls`, merged by [#1](https://github.com/TonyBrobston/paperclip/pull/1) | not submitted |
 | Launch the installed web app in standalone display mode, so the Android PWA installs as an app instead of a shortcut. Also retargets `ui/src/lib/pwa-install-mode.test.ts`, whose upstream copy pins the old value | `fix/android-pwa-master`, merged by [#3](https://github.com/TonyBrobston/paperclip/pull/3) | open upstream as [#13756](https://github.com/paperclipai/paperclip/pull/13756) and [#13461](https://github.com/paperclipai/paperclip/pull/13461); drop this row once either lands |
+| CI that can pass under this owner: `docker.yml` lowercases the GHCR reference it composes, and `commitperclip-review.yml` skips the dependency review and the bot gates that need upstream-only access | `fix/fork-ci-green`, merged by [#10](https://github.com/TonyBrobston/paperclip/pull/10) | not submitted |
 
 Add a row when a change lands on `master`, and drop one once upstream ships the
 same behavior and a merge brings it in.
@@ -55,6 +56,39 @@ to be fetchable through whatever sits in front of the server. An
 authenticating edge that challenges those three requests blocks the install
 independently of this manifest value, and the symptom is identical. That part
 is deployment configuration, not a code change, so it is not in the table.
+
+### Why the CI gates are a fork-local change
+
+Two workflows failed on every run here, and each failure mailed the repository
+owner, because both run on a path GitHub notifies about: `docker.yml` on a
+`master` push, and `commitperclip-review.yml` on `pull_request_target`.
+
+`docker.yml` interpolated `github.repository` straight into the image name, the
+per-architecture build cache references, the manifest-list digests and the
+canary retag. That value carries the owner's display capitalisation, and a
+Docker reference must be lowercase, so buildx refused the build before the
+first layer:
+
+```
+invalid reference format: repository name (TonyBrobston/paperclip) must be lowercase
+```
+
+The slug `paperclipai/paperclip` is already lowercase, so upstream never sees
+it. `commitperclip-review.yml` failed on two things a fork cannot have: a
+dependency graph, which a fork does not inherit from its parent, and the
+`COMMITPERCLIP_KEY` organisation secret.
+
+The lowercase half is generic, which by the rule below belongs upstream rather
+than here. It is carried anyway because the upstream submission path from this
+fork is closed, and a red `master` mailing the owner on every refresh is a cost
+that is paid now. Drop both halves of this row if upstream ever takes the
+lowercasing. Nothing else in the row would survive upstream review: the
+dependency review and bot gates are deliberately keyed to the canonical
+repository.
+
+A fork cannot test the `commitperclip-review.yml` half before it is on
+`master`. `pull_request_target` always loads the workflow file from the base
+branch, so a pull request that edits it still runs the base branch's copy.
 
 ## What the fork does not carry
 
