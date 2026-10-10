@@ -90,9 +90,18 @@ Why the pull request is permanently red:
   logs print each input: on a refresh every substantive one (typecheck, general
   tests, runner verification, build, docker context integrity, e2e shards) reads
   `success` while only `POLICY_RESULT` reads `failure`.
-- **`review` fails** until Dependency graph is enabled for this fork under
-  Settings → Code security. That is a repository setting on a fork, it is not
-  settable through the REST API, and it is unrelated to the merge.
+- **`review` fails** until Dependency graph is enabled for this fork. Go to the
+  fork's `/settings/security_analysis` and click Enable next to "Dependency
+  graph". In the sidebar that page is **Advanced Security**, under Security —
+  GitHub renamed it from "Code security and analysis", so navigate by the row
+  label rather than by the menu name. The failing job prints the full URL in its
+  error, which is the fastest way back to it. A fork does not inherit the
+  dependency graph that public repositories get by default:
+  `GET /repos/paperclipai/paperclip/dependency-graph/sbom` answers `200` while
+  the same call on this fork answers `404`. There is no REST field for it either
+  — the `security_and_analysis` object this repository returns carries only the
+  Dependabot and secret-scanning keys. It is a one-click repository setting and
+  it is unrelated to the merge.
 
 Raise the pull request anyway, because it is the only thing that runs the test
 suite: `pr.yml` triggers on `pull_request` only, and no workflow runs the general
