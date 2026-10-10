@@ -178,6 +178,38 @@ the next day the server still reported `processStartedAt` of
 hours after the merge, because the deploy step existed only as a line in a task
 comment.
 
+### The rebuild is safe to run while agents are working
+
+The rebuild replaces the running container, so the server process is destroyed
+and every in-flight heartbeat run dies with it. That sounds like a reason to
+wait for a quiet moment. It is not, and waiting is the worse trade: an
+undeployed refresh sits for hours, while an interrupted run is a case the server
+is built to handle.
+
+Interruption is a first-class path rather than an accident. Before timer ticks
+start, startup runs native-runner restart recovery, hot-restart adoption
+reconciliation, orphaned-run reaping and queued-run resume — the reap is
+deliberately ordered ahead of the ticks so a wakeup cannot coalesce into a dead
+`running` row (`server/src/index.ts`). From there, `doc/execution-semantics.md`
+§9 governs the issue rather than the run: an assigned issue stranded in
+`in_progress` gets one automatic continuation wake, an assigned issue stranded
+in `todo` gets one assignment recovery wake, and if that recovery also strands
+the issue moves to `blocked` with a board-owned recovery action instead of
+going silent.
+
+That bounded recovery covers `todo` and `in_progress`. An issue parked in
+`in_review` is not covered by it and does not need to be: its wake path is an
+issue monitor or a pending interaction, which are database rows and so are
+indifferent to the process being replaced.
+
+One consequence for whoever asks for the rebuild: **the run that is watching for
+it cannot be the run that confirms it.** Both probes above flip at the moment the
+process is replaced, which is the same moment the watching run is destroyed. So
+"I will confirm the instant it goes live" is a promise no single run can keep —
+the confirmation necessarily comes from the next wake. Arm a monitor and report
+it then, rather than polling to the end of a run that will not survive the event
+it is waiting for.
+
 ## Checking that a branch is really in `master`
 
 Ask whether the branch carries any fork-local commit `master` is missing:
