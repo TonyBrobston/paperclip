@@ -25,6 +25,15 @@ env:
 
 jobs:
   build-and-sign:
+    # `REGISTRY` above names the canonical organisation, and a fork's
+    # `GITHUB_TOKEN` cannot push into it: on a fork this job fails with a 403
+    # from GHCR the first time an upstream merge touches `docker/agent-runtime`
+    # or `tools/agent-shim`, and mails the owner. Publishing fork copies under
+    # the fork's own namespace is not the fix — the Kubernetes sandbox provider
+    # pulls these images from the canonical organisation. Skip instead, the way
+    # cloud-readiness.yml and release.yml already skip off the canonical
+    # repository.
+    if: github.repository == 'paperclipai/paperclip'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7

@@ -13,7 +13,7 @@ even when its pull request is open and green.
 | --- | --- | --- |
 | `PAPERCLIP_ALLOW_LOCAL_API_CALLS`: send agent-facing requests to the container's own listener, so agent runtimes behind an authenticating edge can still reach the API, the MCP gateways, and the GitHub credential broker | `feat/allow-local-runtime-api-calls`, merged by [#1](https://github.com/TonyBrobston/paperclip/pull/1) | not submitted |
 | Launch the installed web app in standalone display mode, so the Android PWA installs as an app instead of a shortcut. Also retargets `ui/src/lib/pwa-install-mode.test.ts`, whose upstream copy pins the old value | `fix/android-pwa-master`, merged by [#3](https://github.com/TonyBrobston/paperclip/pull/3) | open upstream as [#13756](https://github.com/paperclipai/paperclip/pull/13756) and [#13461](https://github.com/paperclipai/paperclip/pull/13461); drop this row once either lands |
-| CI that can pass under this owner: `docker.yml` lowercases the GHCR reference it composes, and `commitperclip-review.yml` skips the dependency review and the bot gates that need upstream-only access | `fix/fork-ci-green`, merged by [#10](https://github.com/TonyBrobston/paperclip/pull/10) | not submitted |
+| CI that can pass under this owner: `docker.yml` lowercases the GHCR reference it composes, `commitperclip-review.yml` skips the dependency review and the bot gates that need upstream-only access, and `agent-runtime-images.yml` skips off the canonical repository | `fix/fork-ci-green`, merged by [#10](https://github.com/TonyBrobston/paperclip/pull/10) | not submitted |
 
 Add a row when a change lands on `master`, and drop one once upstream ships the
 same behavior and a merge brings it in.
@@ -89,6 +89,14 @@ repository.
 A fork cannot test the `commitperclip-review.yml` half before it is on
 `master`. `pull_request_target` always loads the workflow file from the base
 branch, so a pull request that edits it still runs the base branch's copy.
+
+`agent-runtime-images.yml` is the same class of problem, caught before it
+fired. Its `REGISTRY` names the canonical organisation, which a fork's
+`GITHUB_TOKEN` cannot push to, and it triggers on a `master` push that touches
+`docker/agent-runtime/**` or `tools/agent-shim/**`. One upstream commit in the
+last two hundred touched those paths, so the fork would have gone red on some
+later refresh rather than on this one. Its single job now skips off the
+canonical repository.
 
 ## What the fork does not carry
 
