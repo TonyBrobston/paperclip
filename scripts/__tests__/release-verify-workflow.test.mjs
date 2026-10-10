@@ -45,8 +45,33 @@ test("Docker Hub mirrors apply to both image builders without widening publicati
   assert.match(docker, /platform: linux\/amd64/);
   assert.match(docker, /platform: linux\/arm64/);
   assert.match(docker, /permissions:\n\s+contents: read\n\s+packages: write/);
-  assert.match(docker, /outputs: type=image,name=ghcr\.io\/\$\{\{ github\.repository \}\},push-by-digest=true,name-canonical=true,push=true/);
-  assert.match(docker, /cache-to: type=registry,ref=ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\},mode=max/);
+  // The build composes its image name in a step rather than interpolating
+  // `github.repository` into a Docker reference, because that slug carries the
+  // owner's display casing and buildx rejects a mixed-case reference outright.
+  // Run the step to resolve the indirection: the namespace assertions below
+  // stay as strict as they were, and the lowercasing is pinned here.
+  const resolveImageName = (repository) => {
+    const step = docker.split(/\n(?=      - )/).find((candidate) => /^ {8}id: image$/m.test(candidate));
+    assert.ok(step, "the build must compose its image name instead of interpolating the raw slug");
+    assert.match(step, /^ {10}REPOSITORY: \$\{\{ github\.repository \}\}$/m, "derive the name from this repository");
+    const script = step.split("        run: |\n")[1].split("\n").map((line) => line.replace(/^ {10}/, "")).join("\n");
+    const dir = mkdtempSync(path.join(os.tmpdir(), "docker-image-name-"));
+    try {
+      const githubOutput = path.join(dir, "github-output");
+      writeFileSync(githubOutput, "");
+      const result = spawnSync("bash", ["-c", script],
+        { encoding: "utf8", env: { ...process.env, REPOSITORY: repository, GITHUB_OUTPUT: githubOutput } });
+      assert.equal(result.status, 0, result.stderr);
+      return readFileSync(githubOutput, "utf8").match(/^name=(.+)$/m)?.[1];
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  };
+  assert.equal(resolveImageName("Example-Owner/Paperclip"), "ghcr.io/example-owner/paperclip",
+    "a Docker reference must be lowercase, and an owner's slug casing is not");
+  assert.equal(resolveImageName("paperclipai/paperclip"), "ghcr.io/paperclipai/paperclip",
+    "lowercasing leaves this repository's own namespace unchanged, so the substitution below is faithful");
+  const published = docker.replaceAll("${{ steps.image.outputs.name }}", "ghcr.io/${{ github.repository }}");
+  assert.match(published, /outputs: type=image,name=ghcr\.io\/\$\{\{ github\.repository \}\},push-by-digest=true,name-canonical=true,push=true/);
+  assert.match(published, /cache-to: type=registry,ref=ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\},mode=max/);
   assert.match(preview, /permissions:\n\s+contents: read\n\s+steps:/);
   assert.match(preview, /platforms: linux\/amd64\n\s+push: false/);
   assert.match(preview, /outputs: type=docker,dest=\$\{\{ runner\.temp \}\}\/preview-image\.tar/);
