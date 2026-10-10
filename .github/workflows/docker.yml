@@ -111,6 +111,24 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Stamping build version: ${version:-<none>}"
 
+      # A Docker reference must be lowercase, and `github.repository` is not:
+      # it carries the owner's display casing. `paperclipai/paperclip` happens
+      # to be all lowercase, so interpolating the slug directly works here and
+      # fails in any fork under a mixed-case owner — buildx rejects the whole
+      # build with "repository name (Owner/paperclip) must be lowercase"
+      # before the first layer. Lowercase it once and use it everywhere a raw
+      # image reference is composed. (`docker/metadata-action` already
+      # lowercases its own `images` input, so those stay as they are.)
+      - name: Compute image name
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          name="ghcr.io/$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "Image name: ${name}"
+
       # ISO week stamp for the Dockerfile's tool layer: the layer caches
       # across commits and re-pulls the @latest CLI tools when the week rolls
       # over, instead of on every build.
@@ -241,7 +259,7 @@ jobs:
           # By digest, not by tag: two runners cannot each push the same tag
           # and end up with a manifest list. Each leg publishes an untagged
           # image and `merge` names them together.
-          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           # Registry-backed BuildKit cache instead of type=gha: the Actions
           # cache is capped at 10GB per repo, and two multi-arch mode=max jobs
           # evict each other, so most builds ran effectively cold. The cache
@@ -250,8 +268,8 @@ jobs:
           #
           # Per-arch refs now the legs are separate runners: a shared ref would
           # have each leg overwrite the other's cache on every build.
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }}
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }},mode=max
+          cache-from: type=registry,ref=${{ steps.image.outputs.name }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ steps.image.outputs.name }}:buildcache-${{ matrix.arch }},mode=max
           labels: ${{ steps.meta.outputs.labels }}
 
       # The digest is the only thing `merge` needs from this job. Carried as an
@@ -310,6 +328,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
+      # Same lowercasing as the build job, for the same reason: the digest
+      # references below are raw Docker references.
+      - name: Compute image name
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "name=ghcr.io/$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
       # Repeated from the build job rather than passed between them: job
       # outputs would have to survive a matrix, and this is two `ls` calls.
       - name: Compute schema migration labels
@@ -345,11 +373,16 @@ jobs:
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
         run: |
           set -euo pipefail
+          # Each uploaded digest arrives as an empty file named for itself.
+          refs=()
+          for digest in *; do refs+=("${IMAGE}@sha256:${digest}"); done
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+            "${refs[@]}"
 
       # PID 1 must be an init that reaps adopted orphans. With node there, the
       # orphans agent runs leave behind are never wait()ed and pin as zombies
@@ -430,9 +463,11 @@ jobs:
 
       - name: Converge the channel tags onto the current npm canary
         env:
-          IMAGE: ghcr.io/${{ github.repository }}
+          REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Lowercased for the same reason as the build job's image name.
+          IMAGE="ghcr.io/$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           current="$(curl -fsS "https://registry.npmjs.org/-/package/@paperclipai%2Fdb/dist-tags" | jq -er .canary)"
           sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/$(printf 'canary/v%s' "$current" | jq -sRr @uri)" --jq .sha 2>/dev/null || true)"
           if [ -z "$sha" ]; then
