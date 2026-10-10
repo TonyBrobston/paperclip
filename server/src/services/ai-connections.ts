@@ -352,7 +352,7 @@ export function aiConnectionService(db: Db) {
     if (!canUseCredential(grant, userId, audience)) {
       // Membership was checked above. A known user's sharing choice is an
       // operator action; absent identity must remain an unclassified denial.
-      if (userId) throw aiConnectionCredentialNotSharedFailure();
+      if (userId) throw aiConnectionCredentialNotSharedFailure({ connectionName: connection.name, grantId: grant.id });
       throw forbidden("This credential is not shared with the responsible user");
     }
     const installs = await db
@@ -1084,15 +1084,15 @@ export function aiConnectionService(db: Db) {
   }
   // A quota read uses the same credential audience as execution. Operator status
   // alone never grants access to another member's personal subscription.
-  async function quotaAccounts(companyId: string, userId: string) {
+  async function quotaAccounts(companyId: string, userId: string, includeOtherProviders = false) {
     if (!(await membership(companyId, userId))) return [];
     const visible = await list(companyId, userId);
     const accounts = await rows(companyId);
     return accounts.flatMap(row => {
       const summary = visible.find(item => item.id === row.connection.id && item.grantId === row.grant.id);
-      if (!summary || summary.method !== "subscription" || !["openai", "anthropic"].includes(summary.provider)) return [];
+      if (!summary || summary.method !== "subscription" || !(includeOtherProviders ? ["openai", "anthropic", "xai"] : ["openai", "anthropic"]).includes(summary.provider)) return [];
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, quotaAccounts, refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
 }
