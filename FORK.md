@@ -125,6 +125,50 @@ into `heartbeat/run-preparation.ts`. [#7](https://github.com/TonyBrobston/paperc
 collected the CI signal and [#5](https://github.com/TonyBrobston/paperclip/pull/5)
 went merged along with it.
 
+### Merging is not deploying
+
+Pushing `master` changes nothing that is running. The deployment builds this
+repository from its own checkout, so a refresh is live only after that checkout
+is pulled and the image is rebuilt. The rebuild runs where the deployment lives,
+which means an agent cannot do it.
+
+So a refresh is not finished when `master` moves. It is finished when the
+operator has been told to run the rebuild. Notify the operator in the same pass
+that pushes `master`, and put the rebuild command in that message rather than
+only in a task comment. The deployment repository's own `PAPERCLIP-FORK.md`
+holds the command; it is deployment configuration, so it does not belong here.
+
+Two checks answer "is the refresh actually live?" without host access, against
+the running server's own API:
+
+```sh
+API="${PAPERCLIP_API_URL%/api}/api"   # the variable may or may not carry /api
+
+# 1. Has the process restarted since the merge landed?
+#    serverInfo is omitted on an unauthenticated call, so send the key.
+curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$API/health" \
+  | jq '.serverInfo.processStartedAt'
+
+# 2. Does it serve a route the refresh added? 404 means the old image.
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$API/companies/$PAPERCLIP_COMPANY_ID/decision-model"
+```
+
+A `processStartedAt` earlier than the merge commit's date means the rebuild has
+not happened. The second check is the stronger one, because a bare restart would
+move `processStartedAt` without picking up new code: pick any route the refresh
+added (`git diff --diff-filter=A --name-only <deployed-sha> master -- server/src/routes/`)
+and probe it against a route that already existed as the control.
+
+Worked example, the 2026-10-09 refresh: `master` moved at 23:48Z, and at 02:04Z
+the next day the server still reported `processStartedAt` of
+`2026-10-09T19:12:41.662Z` — before the merge — and still returned 404 for
+`/companies/:companyId/decision-model`, a route that merge added, while
+`/agents/me` returned 200. None of those 146 commits was live more than two
+hours after the merge, because the deploy step existed only as a line in a task
+comment.
+
 ## Checking that a branch is really in `master`
 
 Ask whether the branch carries any fork-local commit `master` is missing:
