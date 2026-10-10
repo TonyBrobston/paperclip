@@ -112,9 +112,18 @@ Why the pull request is permanently red:
   logs print each input: on a refresh every substantive one (typecheck, general
   tests, runner verification, build, docker context integrity, e2e shards) reads
   `success` while only `POLICY_RESULT` reads `failure`.
-- **`review` fails** until Dependency graph is enabled for this fork under
-  Settings → Code security. That is a repository setting on a fork, it is not
-  settable through the REST API, and it is unrelated to the merge.
+- **`review` fails** until Dependency graph is enabled for this fork. Go to the
+  fork's `/settings/security_analysis` and click Enable next to "Dependency
+  graph". In the sidebar that page is **Advanced Security**, under Security —
+  GitHub renamed it from "Code security and analysis", so navigate by the row
+  label rather than by the menu name. The failing job prints the full URL in its
+  error, which is the fastest way back to it. A fork does not inherit the
+  dependency graph that public repositories get by default:
+  `GET /repos/paperclipai/paperclip/dependency-graph/sbom` answers `200` while
+  the same call on this fork answers `404`. There is no REST field for it either
+  — the `security_and_analysis` object this repository returns carries only the
+  Dependabot and secret-scanning keys. It is a one-click repository setting and
+  it is unrelated to the merge.
 
 Raise the pull request anyway, because it is the only thing that runs the test
 suite: `pr.yml` triggers on `pull_request` only, and no workflow runs the general
@@ -146,6 +155,82 @@ parameter to `buildPaperclipEnv` and moved the MCP and broker base-URL helpers
 into `heartbeat/run-preparation.ts`. [#7](https://github.com/TonyBrobston/paperclip/pull/7)
 collected the CI signal and [#5](https://github.com/TonyBrobston/paperclip/pull/5)
 went merged along with it.
+
+### Merging is not deploying
+
+Pushing `master` changes nothing that is running. The deployment builds this
+repository from its own checkout, so a refresh is live only after that checkout
+is pulled and the image is rebuilt. The rebuild runs where the deployment lives,
+which means an agent cannot do it.
+
+So a refresh is not finished when `master` moves. It is finished when the
+operator has been told to run the rebuild. Notify the operator in the same pass
+that pushes `master`, and put the rebuild command in that message rather than
+only in a task comment. The deployment repository's own `PAPERCLIP-FORK.md`
+holds the command; it is deployment configuration, so it does not belong here.
+
+Two checks answer "is the refresh actually live?" without host access, against
+the running server's own API:
+
+```sh
+API="${PAPERCLIP_API_URL%/api}/api"   # the variable may or may not carry /api
+
+# 1. Has the process restarted since the merge landed?
+#    serverInfo is omitted on an unauthenticated call, so send the key.
+curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$API/health" \
+  | jq '.serverInfo.processStartedAt'
+
+# 2. Does it serve a route the refresh added? 404 means the old image.
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$API/companies/$PAPERCLIP_COMPANY_ID/decision-model"
+```
+
+A `processStartedAt` earlier than the merge commit's date means the rebuild has
+not happened. The second check is the stronger one, because a bare restart would
+move `processStartedAt` without picking up new code: pick any route the refresh
+added (`git diff --diff-filter=A --name-only <deployed-sha> master -- server/src/routes/`)
+and probe it against a route that already existed as the control.
+
+Worked example, the 2026-10-09 refresh: `master` moved at 23:48Z, and at 02:04Z
+the next day the server still reported `processStartedAt` of
+`2026-10-09T19:12:41.662Z` — before the merge — and still returned 404 for
+`/companies/:companyId/decision-model`, a route that merge added, while
+`/agents/me` returned 200. None of those 146 commits was live more than two
+hours after the merge, because the deploy step existed only as a line in a task
+comment.
+
+### The rebuild is safe to run while agents are working
+
+The rebuild replaces the running container, so the server process is destroyed
+and every in-flight heartbeat run dies with it. That sounds like a reason to
+wait for a quiet moment. It is not, and waiting is the worse trade: an
+undeployed refresh sits for hours, while an interrupted run is a case the server
+is built to handle.
+
+Interruption is a first-class path rather than an accident. Before timer ticks
+start, startup runs native-runner restart recovery, hot-restart adoption
+reconciliation, orphaned-run reaping and queued-run resume — the reap is
+deliberately ordered ahead of the ticks so a wakeup cannot coalesce into a dead
+`running` row (`server/src/index.ts`). From there, `doc/execution-semantics.md`
+§9 governs the issue rather than the run: an assigned issue stranded in
+`in_progress` gets one automatic continuation wake, an assigned issue stranded
+in `todo` gets one assignment recovery wake, and if that recovery also strands
+the issue moves to `blocked` with a board-owned recovery action instead of
+going silent.
+
+That bounded recovery covers `todo` and `in_progress`. An issue parked in
+`in_review` is not covered by it and does not need to be: its wake path is an
+issue monitor or a pending interaction, which are database rows and so are
+indifferent to the process being replaced.
+
+One consequence for whoever asks for the rebuild: **the run that is watching for
+it cannot be the run that confirms it.** Both probes above flip at the moment the
+process is replaced, which is the same moment the watching run is destroyed. So
+"I will confirm the instant it goes live" is a promise no single run can keep —
+the confirmation necessarily comes from the next wake. Arm a monitor and report
+it then, rather than polling to the end of a run that will not survive the event
+it is waiting for.
 
 ## Checking that a branch is really in `master`
 
