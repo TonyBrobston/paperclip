@@ -17,6 +17,28 @@ even when its pull request is open and green.
 Add a row when a change lands on `master`, and drop one once upstream ships the
 same behavior and a merge brings it in.
 
+### Why the local-API opt-in is scoped to one kind of runtime
+
+The opt-in sends agent-facing requests to the server's own listener, which is a
+loopback origin. That is only correct for a runtime executing on the server's
+host. A cloud, gateway, or remote-target runtime resolves the same origin to its
+own machine and would send a scoped run token to whatever answers on that port
+there. `runtimeCanReachLocalApi` makes that call, and both consumers guard on
+it: `resolveAgentFacingApiBaseUrl` in
+`packages/adapter-utils/src/server-utils.ts` and
+`configuredPaperclipApiBaseUrl` in
+`server/src/services/heartbeat/run-preparation.ts`.
+
+Those guards have their own cover —
+`packages/adapter-utils/src/local-api-reachability.test.ts` and
+`server/src/__tests__/runtime-local-api-routing.test.ts`. Deleting either guard
+turns three cases in the matching file red. Before those files existed the
+suite stayed green with either guard removed, so a conflict resolution could
+have dropped one silently; upstream has already moved both functions between
+modules once. Both files are new here, with no upstream counterpart, so a merge
+cannot resolve them away the way it can a hunk inside a file upstream also
+edits.
+
 ### Why the display mode is a fork-local change
 
 A browser installs a web app only when the manifest's `display` is
