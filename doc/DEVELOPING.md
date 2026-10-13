@@ -35,6 +35,28 @@ New workflow versions merged into master then receive runner access without a
 separate SHA allowlist update. Dependabot leaves this first-party reference on
 master.
 
+Runner selection calls `ci-routing.yml@master` on the dedicated
+`paperclip-ci-routing-x64` AWS Fleet. The `paperclip-ci-routing` runner group
+admits only `paperclipai/paperclip/.github/workflows/ci-routing.yml@refs/heads/master`
+and repository ID `1170821064`. GitHub evaluates the canonical repository, author, and sender checks before
+allocating reserved capacity. The validated admission snapshot (`AWS_CI_ROUTING_USER_IDS_SOURCE` and
+`AWS_CI_ROUTING_USER_IDS`) must match `AWS_CI_TRUSTED_USER_IDS`. Refresh it through
+the runner-group configuration helper when the roster changes. Missing, stale,
+or malformed settings keep hosted routing available without evaluating JSON
+in the job's placement expression. Unapproved PRs use hosted metadata routing;
+approved manual canaries on master can use the reserved pool. The routing
+workflow reads GitHub metadata without checking out or executing PR code. Its author, sender, rerun actor,
+repository, head, and merge validation still decide whether tests can use AWS.
+Unapproved test workloads continue to use GitHub-hosted runners.
+
+The routing Fleet has two warm On-Demand runners and a four-runner ceiling.
+Test fleets cannot consume its runner slots. Hosted test queues therefore do
+not block AWS runner selection. A manual dispatch of `ci-routing.yml` on master
+checks placement without launching the test matrix; its non-PR event returns
+the hosted test-runner output. Configure and verify the group and Fleet before
+merging this caller. To roll back, restore the hosted gate and retain the routing
+workflow authorization until assigned jobs finish.
+
 Keep the `.github/**` rule in `.github/CODEOWNERS` and the active master ruleset's
 code-owner review requirement enabled. This covers the caller, the trusted
 workflow, and CODEOWNERS itself. Existing administrator pull-request bypasses
@@ -101,6 +123,29 @@ API responses and MCP transports keep their existing compression behavior.
 ## Storybook
 
 The board UI Storybook keeps stories and Storybook config under `ui/storybook/` so component review files stay out of the app source routes.
+
+Stories are grouped in `ui/storybook/stories/<feature-area>/` and the sidebar follows
+the feature map's sections and feature names. Shared fixtures live in
+`ui/storybook/support/`. Keep each suite's explicit meta `id` and catalog `stableId`
+when changing titles or locations so existing review links remain valid.
+
+Storybook's Overview mirrors every feature in the feature-map README, including
+features without examples. Each feature's generated Overview lists its capabilities
+in recipe order, related suites across primary homes, and missing examples.
+`ui/storybook/generated/` holds the derived pages; the preview config's inline
+`storySort.order` is generated too. Regenerate these outputs
+with `node scripts/storybook-catalog.mjs --write`, not manual edits. Storybook
+start/build rejects stale generated output. These guide pages are separate from
+the authored story inventory and do not count as visual or behavioral coverage.
+
+Start from the downstream [Storybook feature index](../maps/storybook-map/INDEX.md)
+to find existing stories by capability. Its [contract](../maps/storybook-map/README.md)
+separates production subjects, prototype implementations, simulated data, and
+source-review status. Use `maintain-storybook` to reconcile stories/fixtures with
+the feature map, and `review-storybook` to exercise them with existing tools.
+Run `node scripts/storybook-catalog.mjs` after affected story or review-source
+changes; review drift before updating fingerprints, then regenerate with `--write`.
+The feature map remains an upstream input and needs no Storybook-specific fields.
 
 **Chat & Comments → Human identity** covers other-human names and avatars on
 left-aligned task messages alongside agents; only the viewer’s own messages are blue/right-aligned. Its review guide explains the data flow; the task journey uses representative
@@ -495,10 +540,16 @@ npx paperclipai allowed-hostname dotta-macbook-pro
 
 ## Test Commands
 
-The [feature map](../feature-map/README.md) is an optional reference for user
+The [feature map](../maps/feature-map/README.md) is an optional reference for user
 entry points, targeted tests, manual verification recipes, and coverage gaps.
 Its page inventory is a source snapshot. The documented journeys have separate
 verification steps and do not run automatically from the map.
+
+The sibling [agent access map](../maps/agent-access-map/README.md) describes API
+and agent reachability for the same capabilities. The [map contract](../maps/README.md)
+defines synchronization, permissions and evidence. After map edits, run
+`node scripts/check-maps.mjs` for structural/reference checks; it does not start an
+instance or qualify access as an agent.
 
 Use the cheap local default unless you are specifically working on browser flows:
 
@@ -530,6 +581,70 @@ assertion deadlines and retries remain unchanged. Use `pnpm dev` separately when
 verifying Vite/HMR behavior.
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
+
+#### Embedded Postgres template cache
+
+Suites that call `startEmbeddedPostgresTestDatabase` (from `@paperclipai/db`)
+get their own embedded Postgres cluster. The first such suite on a host builds
+one fully migrated cluster and publishes its data directory under
+`$TMPDIR/paperclip-embedded-postgres-templates-<uid>/<key>`. Every later suite
+copies that template and starts Postgres on the copy instead of running
+`initdb` and all migrations again, and the `getEmbeddedPostgresTestSupport`
+probe reuses it instead of starting a throwaway cluster. The key hashes the
+embedded-postgres version, the initdb flags, and every migration file, so a
+changed migration builds a new template. Each suite still runs
+`applyPendingMigrations` on its copy, which is a no-op when the template is
+current. Templates for other keys are removed after seven days without use.
+
+A template is a Postgres data directory, and starting it executes its
+configuration, so the cache is private to the current OS user: the root is
+created with mode `0700` and is only used when it is a real directory (not a
+symlink) owned by the current user with no group or world write bit, and each
+template is checked the same way before it is copied. A root that fails those
+checks (for example one pre-created by another user in a shared `/tmp`) is left
+alone and every suite in that process uses a fresh cluster.
+
+Set `PAPERCLIP_TEST_POSTGRES_TEMPLATE=0` to bypass the cache and give every
+suite a fresh `initdb`, for example when debugging cluster startup itself. A
+failure on the template path (root checks, build, copy, start, or publish)
+falls back to the fresh path automatically, so the cache can make a suite
+slower but never fail it or skip it: a migration that cannot apply still fails
+the suite on the fresh path.
+
+#### Reused Runner build in the server build
+
+The server build vendors `packages/paperclip-runner/dist`, so its
+`prepare:runner-vendor` step has to make sure that directory is a current
+build. It used to run the Runner's full `build` every time. Now the Runner's
+`build` brackets itself with `scripts/record-build-inputs.mjs`: `--begin`, its
+first step, forgets the previous stamp and records a digest of the build's
+inputs (every file under `packages/paperclip-runner` except `dist`,
+`dist-browser`, `runner/target`, `node_modules` and dot-directories; every
+file under `packages/paperclip-eval-kernel` except `dist` and `node_modules`;
+every file under the root `patches` directory, which the acpx profile check
+hashes and the provider entrypoint bundler copies into `dist`; and the root
+`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` and
+`tsconfig.base.json`). `--finish`, its last step, recomputes the digest and
+writes the stamp
+`packages/paperclip-runner/node_modules/.cache/paperclip-runner-build-inputs.json`
+only if the inputs are still the ones the build began with, together with the
+path and size of every file under `dist`. An edit that lands while the build
+runs leaves no stamp, so the next consumer rebuilds.
+`node server/scripts/prepare-runner-vendor.mjs` reuses the build when the
+stamp is for this platform, every recorded output is still there at its
+recorded size, and the current digest matches. Anything else (no stamp, a
+changed input, a deleted or truncated output, a stamp from another platform)
+runs `pnpm --filter @paperclipai/paperclip-runner build` exactly as before, so
+a standalone `pnpm --filter @paperclipai/server build` on a fresh checkout
+still builds the Runner itself. Inside `pnpm build` the Runner has just been
+built by the same command, and the step skips a 12-16s rebuild. The step
+prints one `paperclip.runner-vendor.timing.v1` line saying which it did.
+
+Set `PAPERCLIP_RUNNER_VENDOR_REBUILD=1` to rebuild regardless of the stamp. A
+stamp is only written after a Runner build that passed every step, and both
+the Runner's first build step and the prepare step remove any existing stamp
+before a rebuild starts, so a build that stops partway never leaves a stamp
+that vouches for it.
 
 ### Task search evaluation
 
@@ -1249,14 +1364,57 @@ When a workspace service runs Paperclip for browser OAuth QA, configure its `exp
 
 Keep relevant heartbeat extractions and their focused tests in `server/src/services/heartbeat/`.
 
+Runtime-service coordination is in `server/src/services/heartbeat/runtime-services.ts`.
+It validates service intents, starts configured services, records adapter-managed
+services and primary URLs, and posts workspace-ready notices. Process registries
+and leases stay in `workspace-runtime.ts`; the executor keeps release ordering in
+its existing cleanup path. Public-path tests use real local service processes.
+
+Instruction working-copy coordination is in
+`server/src/services/heartbeat/instruction-working-copy.ts`. Its per-run controller
+prepares copies, tracks save receipts, and coordinates warm-directory handoffs.
+Live getters preserve updated copies and expose acquired reservations even if
+preparation fails. The executor keeps release and environment-cleanup ordering;
+a separate release closure defers cleanup failures without replacing run results.
+See `tests/e2e/instruction-working-copy/README.md` for isolated browser acceptance.
+
 Task assignment Markdown is rendered by `server/src/services/heartbeat/task-markdown.ts`.
-`heartbeat.ts` calls the renderer and re-exports it for existing callers. Keep prompt
+`heartbeat.ts` re-exports it for existing callers. Keep prompt
 formatting changes in the renderer and its tests, separate from run orchestration.
+
+Task context assembly is in `server/src/services/heartbeat/task-context.ts`.
+`prepareHeartbeatTaskContext` rebuilds prompt fields on the current run context:
+continuation summaries, wake comments, task plans, communication guidance, and
+full/compact assignment Markdown. It preserves quarantine and secret redaction
+before computing turn-context revisions. The executor supplies the already-loaded
+issue, session, and trust policy, and retains admission, resource ownership, and
+cleanup. Public-path characterization tests are in
+`server/src/__tests__/heartbeat-task-context.test.ts`; the workspace-bootstrap
+browser fixture also checks the persisted prompt variants and description revision
+from a real process adapter before completing its task.
+
+Execution configuration is assembled in
+`server/src/services/heartbeat/execution-configuration.ts`: workspace and issue
+overrides, scoped credentials, managed AI identity, and runtime skill delivery.
+The executor receives credential ownership and failure-redaction updates as soon
+as they are available, so later setup failures still clean up acquired resources.
+Busy-account deferral returns explicitly before session/workspace preparation.
+Public-path tests are in `server/src/__tests__/heartbeat-execution-configuration.test.ts`.
+
+Session preparation is in `server/src/services/heartbeat/session-preparation.ts`.
+It selects fresh or resumable sessions from effective config and managed-account
+identity, then resolves adapter session identity and compaction after workspace
+preparation. Both phases keep their original ordering in `heartbeat.ts`; they
+acquire no runtime resources. Public-path characterization tests live in
+`server/src/__tests__/heartbeat-session-preparation.test.ts`.
 
 Run-log formatting is in `server/src/services/heartbeat/run-log.ts`. It bounds
 stored event payloads, redacts and shortens log chunks, and caps stdout/stderr
-excerpts. `heartbeat.ts` keeps event writes, current-user redaction, and live
-event delivery. Existing public helpers remain available from `heartbeat.ts`.
+excerpts. `run-output.ts` owns per-attempt log handles, current-user redaction,
+output progress writes, live log delivery, and adapter event callbacks. The log
+store remains service-scoped. Completion reads live excerpt getters so output
+that arrives during finalization is retained. Existing public helpers and flush
+interval constants remain available from `heartbeat.ts`.
 
 Workspace preparation is in `server/src/services/heartbeat/workspaces.ts`. It
 owns managed checkout materialization, workspace validation and reuse, referenced
@@ -1358,8 +1516,32 @@ Native selection retains the row lock that serializes it with cancellation and
 controller lease renewal. The executor receives an explicit selection result;
 lifecycle and ownership callbacks update its teardown state immediately, including
 when preparation later throws. Public sandbox lifecycle and model fallback helpers
-remain re-exported by `heartbeat.ts`. Provider dispatch and final cleanup stay in
-the executor.
+remain re-exported by `heartbeat.ts`.
+
+Environment selection is in `server/src/services/heartbeat/environment-selection.ts`.
+`selectHeartbeatEnvironment` resolves environment policy and workspace reuse,
+including immutable native recovery bindings, managed sandbox enforcement, and
+Kubernetes provisioning. It validates native chat isolation and checks shared
+workspace contention before acquisition. It can defer a sandbox run or add a
+concurrency note to the task context. The executor retains lease ownership,
+dispatch gates, and terminal cleanup.
+
+Workspace preparation is in `server/src/services/heartbeat/workspace-preparation.ts`.
+`prepareHeartbeatWorkspace` resolves and provisions the workspace, persists its
+metadata and issue binding, then acquires and realizes the execution environment.
+It preserves the immutable workspace binding used by native recovery and records
+preparation spans even when acquisition or realization fails. The executor retains
+dispatch gates and terminal lease cleanup. Persistence
+failures still clean newly created workspace artifacts before propagating.
+
+Runtime execution is in `server/src/services/heartbeat/runtime-execution.ts`.
+`executeHeartbeatRuntime` dispatches a prepared native session or legacy adapter,
+captures usage, finalizes workspace operations, and releases gateway tokens and
+instruction copies. The executor supplies the atomic dispatch gate and retains
+admission, terminal run status, retry handling, and outer lease cleanup. An explicit
+dispatch result preserves early cancellation returns; ownership callbacks update
+teardown state before errors propagate. Instruction getters retain updates made
+during provider execution. Keep policy changes separate from this extraction.
 
 ## Wake Context Delivery
 
@@ -1403,6 +1585,19 @@ normal Claude catalog and accepts custom model IDs; the exact ID is sent to
 Claude, which can reject unavailable models. Package/version verification is
 independent of model selection. Environment tests verify runtime installation;
 a successful provider run additionally verifies credentials and model access.
+
+The server must install and bundle `@agentclientprotocol/claude-agent-acp`
+at the qualified version, including the patched bridge and pinned SDK. The
+vendor dependency check covers this dynamic lookup as well as ordinary imports.
+Source builds bind the vendored runner to the workspace's pnpm store while
+keeping the server manifest as its provider authority. Published npm bundles
+retain the pinned SDK JavaScript and declare its native packages as server
+optional dependencies, so npm installs the executable for the consumer's
+platform. Runtime admission still checks the exact version and executable digest.
+A missing provider package is reported as **Runtime missing**, with automatic
+retries stopped. Reinstall or rebuild Paperclip with its provider dependencies,
+restart the server, and run the agent's runtime test before retrying the task.
+Changing the model or signing in again cannot repair a missing runtime package.
 
 ACPX Claude supports Linux x64 and macOS ARM64/x64 with pinned SDK executables.
 On macOS the launcher uses private verified module/executable snapshots instead
@@ -1848,6 +2043,14 @@ pnpm secrets:migrate-inline-env --apply # apply migration
 
 ## Internal Connection Token Brokers
 
+Paperclip Cloud connector identities support `development`, `test`, `staging`,
+and `production`. To enroll a self-hosted instance against the test broker, set
+`PAPERCLIP_CLOUD_CONNECTOR_BASE_URL=https://test.paperclip.app`; its environment
+is inferred as `test`. Managed instances also receive
+`PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT=test`. Standard Cloud broker hosts reject
+identities for another environment, and enrollment keys remain local to the
+selected broker.
+
 Connection token exchanges carry a resolved parent credential, so their URLs
 are public-only by default even in local/private deployments. To intentionally
 use an internal broker, configure an exact hostname allowlist:
@@ -2089,6 +2292,23 @@ Chromium. The test starts its own loopback Vite server and mocks API responses;
 it needs no running Paperclip instance or provider credentials. The same spec lives
 in the default `test:e2e` discovery tree, so the existing Chrome CI shards run it
 on pull requests.
+
+### Workspace feature checks (2026-10-09)
+
+Task files, personal agent state (`AGENT_HOME`), and provider home are distinct. New filesystem tasks without an explicit source use a stable company/task directory. Debug workspace placement through the task workspace API rather than inferring it from organizational project or agent identity.
+
+Focused coverage lives in `task-workspace-binding.test.ts`, `task-workspace-repositories*.test.ts`, `task-workspace-tools.test.ts`, channel integration tests, and adapter-utils checkpoint/native persistence tests. Full handoff still requires the repository typecheck, test, and build commands. Remote transport fixtures establish protocol behavior; they do not qualify production provider throughput.
+
+Channel defaults can be configured in Apps connection settings and per destination. They affect new conversations only. A queued selection or repository request is applied on the next normal admission; configuration changes do not interrupt a live run. See [the architecture](plans/2026-10-09-task-workspaces.md).
+
+### Slack provisioning paths
+
+Self-hosted development continues to use independent Slack app setup. Managed
+Slack installation is a disabled-by-default Cloud feature that also requires the
+companion broker profile and Slack approval. Do not add manager client credentials
+to a local `.env` or an open-source deployment. See
+[Slack setup and Cloud qualification](connections/slack-setup.md) for the gates,
+recovery behavior, and production-component stories.
 
 ## Install on Android
 

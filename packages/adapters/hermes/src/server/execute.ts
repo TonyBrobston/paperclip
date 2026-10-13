@@ -73,6 +73,14 @@ function cfgStringArray(v: unknown): string[] | undefined {
     ? (v as string[])
     : undefined;
 }
+function cfgEnvString(v: unknown): string | undefined {
+  if (typeof v === "string" && v.length > 0) return v;
+  if (v && typeof v === "object" && "value" in v) {
+    const value = (v as { value?: unknown }).value;
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+  }
+  return undefined;
+}
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
@@ -443,8 +451,25 @@ export async function execute(
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
+  // The adapter-level API base override, resolved once for both consumers.
+  // Upstream added `config.env.PAPERCLIP_API_URL` as a second way to configure
+  // it, in the same precedence slot as `paperclipApiUrl` and below it. It is
+  // resolved here, ahead of both the prompt and the child environment, because
+  // the two must name the same base: deriving it only for the prompt would
+  // print the adapter's value into the instructions while buildPaperclipEnv
+  // put the process-level one in the environment, and an agent that trusted
+  // its instructions over its environment would call the wrong origin.
+  const userEnvForPrompt = config.env as Record<string, unknown> | undefined;
+  const configuredApiBaseUrl =
+    cfgString(config.paperclipApiUrl) ??
+    (userEnvForPrompt && typeof userEnvForPrompt === "object"
+      ? cfgEnvString(userEnvForPrompt.PAPERCLIP_API_URL)
+      : undefined);
+  const promptConfig: Record<string, unknown> = { ...config };
+  if (configuredApiBaseUrl) promptConfig.paperclipApiUrl = configuredApiBaseUrl;
+
   const sessionId = persistSession ? prevSessionId : undefined;
-  const prompt = buildPrompt(ctx, config, { resumedSession: Boolean(sessionId) });
+  const prompt = buildPrompt(ctx, promptConfig, { resumedSession: Boolean(sessionId) });
 
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
@@ -496,7 +521,7 @@ export async function execute(
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
     ...buildPaperclipEnv(ctx.agent, ctx.agentIdentity, {
       runtimeCanReachLocalApi: true,
-      configuredApiBaseUrl: cfgString(config.paperclipApiUrl),
+      configuredApiBaseUrl,
     }),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };

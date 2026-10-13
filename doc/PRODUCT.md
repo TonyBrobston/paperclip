@@ -67,6 +67,11 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+When a task is assigned to the current human, the message composer defaults to
+the latest agent that assigned it to them. If no assignment is available, it uses
+the latest other commenter, or leaves the recipient empty. A manual recipient
+choice stays selected while task data refreshes.
+
 ### Company Skills and Policy
 
 Company skills are shared operating capabilities, not privileged objects by default. Every authenticated agent in a company can create, import, install, edit, update, test, reset, and remove that company's skills unless the company has configured an explicit restriction.
@@ -80,7 +85,11 @@ skills through their existing GitHub connection and manually refresh installed
 snapshots. The source records repository, branch, path, and installed commit;
 the connection supplies caller-authorized access. Originals remain viewable and
 testable, with independent editable copies. New upstream skills require selection,
-and deselection, source disconnection, or upstream removal retains installed content.
+and deselection or upstream removal retains installed content. Disconnecting removes
+the source after an explicit choice: keep independent editable copies in My Skills,
+or delete its imported skills. Copies preserve agent assignments; skills still
+used by agents must be detached before deletion. Already-disconnected sources
+can be removed through the same flow.
 
 An explicit restricted policy may deny selected operations or switch to a default-deny preset with explicit allow rules. Core exposes a stable versioned policy API so EE and other administrative clients configure and simulate the same evaluator used by skill mutation routes. Core Skill Studio only needs to perform normal skill work, explain an explicit denial, and point administrators to EE when its richer policy UI is available; it must not recreate a partial enterprise permission editor.
 

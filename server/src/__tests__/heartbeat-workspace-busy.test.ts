@@ -7,11 +7,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   costEvents,
   agents,
+  authUsers,
   agentRuntimeState,
   agentWakeupRequests,
   activityLog,
   budgetPolicies,
   companies,
+  companyMemberships,
   companySkills,
   createDb,
   closeRegisteredClients,
@@ -156,6 +158,8 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     failExecutionRunIds.clear();
     captureRunFailure.mockClear();
     await instanceSettingsService(db).updateGeneral({ executionMode: "any" });
+    await instanceSettingsService(db).updateExperimental({ enableManagedSandboxOnly: false });
+    vi.unstubAllEnvs();
   });
 
   afterAll(async () => {
@@ -200,6 +204,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     await db.delete(agents);
     await db.delete(environments);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   }
 
@@ -279,6 +284,14 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(authUsers).values({
+      id: "responsible-user", name: "Responsible user", email: "workspace-busy@example.test",
+      createdAt: now, updatedAt: now,
+    }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "responsible-user",
+      status: "active", membershipRole: "member",
     });
 
     await db.insert(projects).values({
@@ -489,6 +502,90 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(executedRunIds).not.toContain(run!.id);
   });
 
+  it.each(["any", "invalid"])("refuses local fallback when Kubernetes is required but bootstrap mode is %s", async (mode) => {
+    const fixture = await seedWorkspaceFixture({ agentEnvironmentDriver: "local" });
+    vi.stubEnv("PAPERCLIP_EXECUTION_MODE", mode);
+    await instanceSettingsService(db).updateGeneral({ executionMode: "kubernetes" });
+
+    const run = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId }, "system");
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    const finished = await heartbeat.getRun(run!.id);
+    expect(finished?.status).toBe("failed");
+    expect(finished?.error).toContain("no managed Kubernetes environment is configured");
+    expect(executedRunIds).not.toContain(run!.id);
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, run!.id))).toHaveLength(0);
+    expect((await heartbeat.getRun(fixture.holderRunId))?.status).toBe("running");
+  });
+
+  it("lazily provisions the required Kubernetes environment before applying workspace contention", async () => {
+    const fixture = await seedWorkspaceFixture({ agentEnvironmentDriver: "local" });
+    for (const key of Object.keys(process.env).filter(key => key.startsWith("PAPERCLIP_K8S_"))) {
+      vi.stubEnv(key, undefined);
+    }
+    vi.stubEnv("PAPERCLIP_EXECUTION_MODE", "kubernetes");
+    vi.stubEnv("PAPERCLIP_K8S_IN_CLUSTER", "true");
+    vi.stubEnv("PAPERCLIP_K8S_BACKEND", "job");
+    await instanceSettingsService(db).updateGeneral({ executionMode: "kubernetes" });
+
+    const run = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId }, "system");
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    const configured = await db.select().from(environments).where(eq(environments.driver, "sandbox"));
+    expect(configured).toMatchObject([{
+      status: "active",
+      config: { provider: "kubernetes", inCluster: true, backend: "job" },
+      metadata: { managedKubernetesSandbox: true },
+    }]);
+    expect((await heartbeat.getRun(run!.id))?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect(executedRunIds).not.toContain(run!.id);
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, run!.id))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id))).toHaveLength(1);
+  });
+
+  it.each(["missing", "archived"])("refuses local execution when the managed sandbox is %s", async (state) => {
+    const fixture = await seedWorkspaceFixture({ agentEnvironmentDriver: "local" });
+    if (state === "archived") {
+      await db.insert(environments).values({
+        name: "Unavailable managed sandbox", driver: "sandbox", status: "archived",
+        config: { provider: "fake" }, metadata: { managedByPaperclip: true },
+      });
+    }
+    await instanceSettingsService(db).updateExperimental({ enableManagedSandboxOnly: true });
+
+    const run = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId }, "system");
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    const finished = await heartbeat.getRun(run!.id);
+    expect(finished?.status).toBe("failed");
+    expect(finished?.error).toContain("no active managed sandbox environment exists");
+    expect(executedRunIds).not.toContain(run!.id);
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, run!.id))).toHaveLength(0);
+    expect((await heartbeat.getRun(fixture.holderRunId))?.status).toBe("running");
+  });
+
+  it("redirects a local selection to the managed sandbox before applying workspace contention", async () => {
+    const fixture = await seedWorkspaceFixture({ agentEnvironmentDriver: "local" });
+    await db.insert(environments).values({
+      name: "Managed sandbox", driver: "sandbox", status: "active",
+      config: { provider: "fake" }, metadata: { managedByPaperclip: true },
+    });
+    await instanceSettingsService(db).updateExperimental({ enableManagedSandboxOnly: true });
+
+    const run = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId }, "system");
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(run!.id))?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect(executedRunIds).not.toContain(run!.id);
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, run!.id))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id))).toHaveLength(1);
+    expect((await heartbeat.getRun(fixture.holderRunId))?.status).toBe("running");
+  });
+
   it.each([
     { driver: "local", policySource: "issue" },
     { driver: "local", policySource: "project" },
@@ -525,7 +622,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(retryRuns).toHaveLength(0);
   });
 
-  it("allow passes the busy gate for a sandbox environment and adds coordination context", async () => {
+  it("rejects unproven concurrent physical sharing in a sandbox environment", async () => {
     const fixture = await seedWorkspaceFixture({
       issueWorkspaceSettings: { sharedWorkspaceConcurrency: "allow" },
       agentEnvironmentDriver: "sandbox",
@@ -540,11 +637,8 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(run).not.toBeNull();
 
     const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
-    expect(finishedRun?.errorCode).not.toBe(WORKSPACE_BUSY_ERROR_CODE);
-    expect(executedRunIds).toContain(run!.id);
-    expect((finishedRun?.contextSnapshot as Record<string, unknown>)?.paperclipTaskMarkdown).toContain(
-      `shared workspace is concurrently held by run ${fixture.holderRunId}`,
-    );
+    expect(executedRunIds).not.toContain(run!.id);
+    expect(finishedRun?.error).toContain("cannot place concurrent agents in one physical shared folder");
     const retryRuns = await db
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)

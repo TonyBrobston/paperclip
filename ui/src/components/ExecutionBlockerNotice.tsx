@@ -4,9 +4,11 @@ import { agentsApi } from "../api/agents";
 import { activityApi } from "../api/activity";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "./ui/button";
+import { cn } from "../lib/utils";
 import { Link } from "../lib/router";
 
-export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried }: {
+export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried, className }: {
+  className?: string;
   companyId: string;
   issueId: string;
   blocker: ExecutionBlocker;
@@ -33,11 +35,24 @@ export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried 
     },
   });
   return (
-    <div role="status" aria-label="Task recovery" className="mx-(--sz-execution-blocker-inline) my-(--sz-execution-blocker-block) flex flex-wrap items-center justify-between execution-blocker-notice border border-border bg-muted text-foreground">
+    <div role="status" aria-label="Task recovery" className={cn("task-context-notice flex flex-wrap items-center justify-between gap-2", className)}>
       <div className="min-w-0 flex-1 break-words">
         <p>{modelRejected ? "Model unavailable." : "Recovery needed."}{blocker.runError ? ` ${blocker.runError}` : ""}</p>
         {modelRejected && <p>Choose a supported model or clear the task's model override, then retry.</p>}
-        <p>{blocker.nextAction}</p>
+        {blocker.workspaceRepairRequired ? (
+          <>
+            {/* The stored next action is an operator runbook step; lead with what happened. This hold also covers
+                unsafe archives and local runs, so do not claim retries or a retained sandbox here. */}
+            <p>
+              Paperclip could not restore the agent's workspace files after its last run. A board operator must
+              recover the files before the agent can continue.
+            </p>
+            <details>
+              <summary className="cursor-pointer">Technical details</summary>
+              <p>{blocker.nextAction}</p>
+            </details>
+          </>
+        ) : <p>{blocker.nextAction}</p>}
         {Boolean(blocker.savedMessageCount) && (
           <p>{blocker.savedMessageCount} saved {blocker.savedMessageCount === 1 ? "message is" : "messages are"} waiting for recovery.</p>
         )}

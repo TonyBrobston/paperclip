@@ -1,3 +1,4 @@
+import type { TaskWorkspaceIntent, TaskWorkspacePendingSelection } from "./task-workspace.js";
 import type { ExecutionProjection, ExecutionBlocker } from "./execution-projection.js";
 import type {
   IssueCommentAuthorType,
@@ -891,6 +892,9 @@ export interface Issue {
   monitorAttemptCount?: number;
   monitorNotes?: string | null;
   monitorScheduledBy?: IssueMonitorScheduledBy | null;
+  workspaceBindingRevision?: number;
+  workspaceSelection?: TaskWorkspaceIntent | null;
+  workspacePendingSelection?: TaskWorkspacePendingSelection | null;
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
@@ -1021,6 +1025,9 @@ export interface IssueComment {
   companyId: string;
   issueId: string;
   authorType: IssueCommentAuthorType;
+  /** Server-generated receipt provenance; not writable by comment callers. */
+  origin?: "comment" | "fast_response";
+  fastResponseRequestId?: string | null;
   authorAgentId: string | null;
   authorUserId: string | null;
   /** Responsible user attribution. Legacy and plugin-provided comment values may omit it. */
