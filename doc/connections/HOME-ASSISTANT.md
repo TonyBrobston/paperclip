@@ -98,6 +98,16 @@ and `public`, and link-local addresses are refused in every deployment mode. A
 publicly exposed Paperclip deployment cannot reach a LAN Home Assistant, and
 will say so.
 
+`homeAssistantApiUrl` re-checks the stored address on every call, because the
+setup field pattern only guards what setup wrote: config saved before the
+pattern existed, or edited by hand, reaches the executor unchecked. It rejects
+a scheme other than `http:` or `https:`, embedded credentials, a query string
+and a fragment. The scheme check is not redundant with `new URL` — Node parses
+`ha.example.test:8123` as the scheme `ha.example.test:` with an opaque path
+rather than throwing, so an address that lost its scheme would otherwise build
+a nonsense request. A rejected address surfaces as a `422` that tells the
+operator to reconnect, and the message does not echo the stored address.
+
 ## Tool catalog
 
 The catalog in `packages/shared/src/home-assistant.ts` is a fixed list. Each
