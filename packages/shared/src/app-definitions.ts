@@ -297,6 +297,16 @@ export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string
       askFirstRiskLevels: ["write", "destructive"],
     };
   }
+  // Home Assistant's single write action reaches the whole service registry, so
+  // it can unlock a lock or reload configuration depending only on its
+  // arguments. Ship it Ask first rather than Allowed. The nine read actions
+  // stay Allowed, which is the lookup work this connector exists for.
+  if (app.slug === "home-assistant") {
+    return {
+      access: "all_agents",
+      askFirstRiskLevels: ["destructive"],
+    };
+  }
   return {
     access: "all_agents",
     askFirstRiskLevels: [],

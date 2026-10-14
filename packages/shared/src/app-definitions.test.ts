@@ -765,13 +765,22 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === "linear")?.methods[0]?.defaults
         ?.scopesHint,
     ).toEqual(["read", "write"]));
-  it("defaults every new connection action to allowed except Enterpret writes", () => {
+  it("defaults every new connection action to allowed except Enterpret writes and Home Assistant service calls", () => {
     for (const app of APP_DEFINITIONS)
       for (const method of app.methods) {
         if (app.slug === "enterpret") {
           expect(recommendedDefaultsForApp(app, method.key)).toEqual({
             access: "all_agents",
             askFirstRiskLevels: ["write", "destructive"],
+          });
+          continue;
+        }
+        // Home Assistant's one write action reaches the whole service
+        // registry, so it ships Ask first while the nine reads stay Allowed.
+        if (app.slug === "home-assistant") {
+          expect(recommendedDefaultsForApp(app, method.key)).toEqual({
+            access: "all_agents",
+            askFirstRiskLevels: ["destructive"],
           });
           continue;
         }

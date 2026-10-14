@@ -24,8 +24,47 @@ an agent can write a correct automation.
 
 This connector therefore wraps Home Assistant's
 [REST API](https://developers.home-assistant.io/docs/api/rest/) instead. An
-operator who only wants voice-style device control can still use the generic
-MCP route; the two do not conflict.
+operator who only wants voice-style device control can still connect
+`/api/mcp/{api_id}` (for example `/api/mcp/assist`) through the generic MCP
+route; the two capabilities do not overlap.
+
+A second practical difference: a curated method that declares a
+`serverUrlTemplate` is required to be HTTPS, because
+`normalizeConnectionMethodConfig` rejects a resolved catalog server URL that is
+not. An MCP catalog entry for Home Assistant therefore cannot offer a
+plain-HTTP LAN instance. This connector declares no template and keeps the
+address in `tenantFields`, so a LAN instance with no certificate works where the
+deployment permits private egress.
+
+### Relationship to upstream PR #15477
+
+Upstream [paperclipai/paperclip#15477](https://github.com/paperclipai/paperclip/pull/15477)
+is an open proposal for a Home Assistant *MCP* connector over
+`/api/mcp/assist`, with Home-Assistant-specific risk rules and quarantine for
+newly appearing tools. It is HTTPS-only by its own description.
+
+The two are complementary in capability — Assist-governed device control there,
+registry and state lookup here — but they are not complementary in the
+repository. Both use the slug `home-assistant`, this file path, the same brand
+manifest entry, and the same permission-review app key, so they collide
+directly on:
+
+```text
+doc/connections/HOME-ASSISTANT.md
+doc/connections/README.md
+doc/connections/tool-method-permission-reviews.json
+packages/shared/src/app-definitions/home-assistant.json
+packages/shared/src/app-definitions{,.test,.generated}.ts
+server/src/services/tool-access.ts
+ui/public/brands/apps/{home-assistant.svg,manifest.json}
+```
+
+Their method key is `mcp-access-token`; this one is `rest-token`. If both are
+wanted, the cleanest resolution is one `home-assistant` definition carrying both
+methods, with the REST method keeping its `tenantFields` address and the MCP
+method keeping its HTTPS template. Keeping them as two definitions would need a
+distinct slug for one of them, at the cost of two Home Assistant cards in
+Browse.
 
 ## Shape
 
@@ -74,9 +113,15 @@ Write actions: `call_service`, and only that one.
 `home_assistant_call_service` is classified **destructive** rather than
 `write`. Home Assistant's service registry is how a caller unlocks a lock,
 reloads configuration, or stops the instance, and the risk of the action
-depends on arguments rather than on the tool name. Classifying it destructive
-means an operator sees it in the Write filter on **Permissions** and can set it
-to **Ask first** or **Off** without losing the read surface.
+depends on arguments rather than on the tool name.
+
+Because of that, `recommendedDefaultsForApp` ships this connector with
+`askFirstRiskLevels: ["destructive"]`, so a new connection has
+`call_service` on **Ask first** and all nine reads **Allowed**. That is a
+narrow provider policy of the kind the playbook allows, and it follows the
+Enterpret precedent; it does not change the repository-wide default for any
+other connector. An operator can still move it to Allowed or Off on
+**Permissions**.
 
 ### No configuration writes, deliberately
 

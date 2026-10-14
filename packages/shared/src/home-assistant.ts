@@ -233,7 +233,10 @@ export const HOME_ASSISTANT_TOOLS = [
         maxLength: 64,
       },
       entityId: {
-        oneOf: [
+        // anyOf rather than oneOf: the two branches are disjoint, so the
+        // exclusivity oneOf adds buys nothing, and tool-calling clients
+        // handle anyOf more consistently.
+        anyOf: [
           { type: "string", maxLength: 255 },
           { type: "array", items: { type: "string", maxLength: 255 }, maxItems: 50 },
         ],
