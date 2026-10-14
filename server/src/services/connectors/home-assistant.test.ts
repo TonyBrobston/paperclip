@@ -100,10 +100,35 @@ describe("Home Assistant connection identity", () => {
     expect(() => homeAssistantApiUrl("http://ha.example.test:8123#x", "/api/")).toThrowError(
       /query or fragment/,
     );
+    // "ha.example.test:8123" parses as a scheme with an opaque path rather
+    // than throwing, so the scheme is checked explicitly.
+    expect(() => homeAssistantApiUrl("ha.example.test:8123", "/api/")).toThrowError(
+      /must start with http/,
+    );
     // A reverse-proxy path prefix is preserved.
     expect(homeAssistantApiUrl("https://ha.example.test/ha", "/api/states").toString()).toBe(
       "https://ha.example.test/ha/api/states",
     );
+  });
+
+  it("reports an unusable stored address as operator-fixable, not as a server fault", async () => {
+    // Stored config predates the setup field pattern, or was hand-edited.
+    for (const baseUrl of ["http://user:pw@ha.example.test:8123", "ha.example.test:8123"]) {
+      const failing = executeHomeAssistantTool(
+        { transport: "rest_api", config: { sourceTemplateKey: "home-assistant", methodConfig: { baseUrl } } },
+        headers,
+        "home_assistant_get_config",
+        {},
+        {
+          allowPrivateNetwork: true,
+          request: async () => {
+            throw new Error("the request must never be attempted");
+          },
+        },
+      );
+      await expect(failing).rejects.toThrowError(/unusable instance address/);
+      await expect(failing).rejects.toMatchObject({ status: 422 });
+    }
   });
 });
 

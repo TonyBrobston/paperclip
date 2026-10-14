@@ -34,6 +34,12 @@ export function homeAssistantApiUrl(baseUrl: string, path: string): URL {
   // rewrite every request built from it. The setup field pattern already
   // rejects these; re-check here because this runs against stored config.
   const base = new URL(trimmed);
+  // `new URL("ha.example.test:8123")` parses as the scheme `ha.example.test:`
+  // with an opaque path rather than throwing, so a stored address that lost its
+  // scheme would build a nonsense request instead of failing here.
+  if (base.protocol !== "http:" && base.protocol !== "https:") {
+    throw new Error("Home Assistant base URL must start with http:// or https://");
+  }
   if (base.username || base.password) {
     throw new Error("Home Assistant base URL must not contain credentials");
   }

@@ -68,7 +68,18 @@ async function call(
   options: RequestOptions,
   body?: unknown,
 ): Promise<{ text: string; contentType: string }> {
-  const url = homeAssistantApiUrl(baseUrl, path);
+  let url: URL;
+  try {
+    url = homeAssistantApiUrl(baseUrl, path);
+  } catch {
+    // Stored config can be older than the setup field pattern, or hand-edited.
+    // Surface it as operator-fixable configuration rather than a server fault,
+    // and do not echo the stored address back.
+    throw new HomeAssistantError(
+      422,
+      "This Home Assistant connection has an unusable instance address. Reconnect it and enter the address you open Home Assistant at, with no query string, fragment or embedded credentials.",
+    );
+  }
   const init: RequestInit = {
     method: body === undefined ? "GET" : "POST",
     redirect: "error",
