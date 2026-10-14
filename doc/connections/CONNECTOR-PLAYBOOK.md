@@ -268,7 +268,7 @@ These axes produce combinations such as:
 | --- | --- | --- | --- |
 | `mcp_remote` | Yes | First-class discovery, health, catalog, gateway, test, OAuth, and credential projection. | Default for official hosted MCP servers. |
 | `local_stdio` | Only with an approved template | First-class only through registered templates and a trusted runtime host. Disabled in authenticated/public deployments without that host. | Never put an arbitrary command in an `AppDefinition`. Register and test a template. |
-| `rest_api` | No, not generally | Not exposed through the connected MCP gateway. Composio is a provider-specific parent that creates MCP-capable children. | Do not add a generic REST/API card until an execution adapter or wrapper exists. |
+| `rest_api` | No, not generally | Exposed through the gateway only for a reviewed connector in `REST_CONNECTOR_SLUGS`, which supplies its own execution module and a fixed tool catalog. Otherwise not exposed; Composio is a provider-specific parent that creates MCP-capable children. | Do not add a generic REST/API card until an execution adapter or wrapper exists. |
 
 `api_key` in a method means an authentication mode; it does not mean the
 transport is a REST API. Most current API-key catalog entries authenticate a
@@ -2359,15 +2359,27 @@ Collect end-to-end evidence using the production validation matrix above:
 - Audit rows prove actor, run/issue context, connection, tool, decision,
   reason code, and outcome.
 
-## Reviewed REST browser connection
+## Reviewed REST connections
 
-[Browser Use Cloud](./BROWSER-USE.md) uses the v4 REST API through the same
-connection grants, catalog, policies, approvals and audit gateway. Its
-`provider_rest` execution path is limited to the reviewed Browser Use adapter;
-adding `rest_api` to a catalog entry does not enable arbitrary HTTP execution.
-The task Browser panel is a human-only credential viewer, separate from agent
-tool results. Follow that guide for lifecycle, profile scope, cost accounting,
+A `rest_api` connection reaches the gateway only when its slug is in
+`REST_CONNECTOR_SLUGS` (`packages/shared/src/app-definitions.ts`). That set is
+what gives a connection a `rest_api` tool application, admits it to the
+`provider_rest` path, and routes its calls to a named execution module.
+Membership is the whole gate: adding `rest_api` to a catalog entry does not
+enable arbitrary HTTP execution, and a connection outside the set gets no tool
+application and therefore no catalog. Each member still supplies a fixed,
+reviewed tool catalog — never a pass-through path or request body — and keeps
+the ordinary grants, catalog, policies, approvals and audit.
+
+[Browser Use Cloud](./BROWSER-USE.md) uses the v4 REST API this way. The task
+Browser panel is a human-only credential viewer, separate from agent tool
+results. Follow that guide for lifecycle, profile scope, cost accounting,
 cleanup and the required live acceptance pass.
+
+[Home Assistant](./HOME-ASSISTANT.md) uses the same path for a self-hosted
+instance, where the address is a connection setting rather than a catalog
+endpoint. Follow that guide for the private-network rule, the long-lived-token
+boundary, and why it deliberately exposes no configuration-writing tool.
 
 ## Slack task tools
 

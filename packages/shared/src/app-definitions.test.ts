@@ -14,8 +14,10 @@ import {
   getConnectableAppDefinition,
   getAppStoreDefinition,
   getRecommendedConnectionMethod,
+  isRestConnectorConnection,
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
+  REST_CONNECTOR_SLUGS,
 } from "./app-definitions.js";
 import {
   GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS,
@@ -873,7 +875,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(79);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(80);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1271,6 +1273,9 @@ describe("AppDefinition catalog", () => {
     ).sort();
     expect(required).toEqual([
       "clickhouse:mcp-oauth:serviceId",
+      // Home Assistant is self-hosted, so its address is the connection's
+      // tenant boundary and there is no catalog endpoint to fall back to.
+      "home-assistant:rest-token:baseUrl",
       "honcho:mcp-api-key:workspaceId",
       "make:mcp-api-token:zone",
       "shopify:storefront-mcp:storeDomain",
@@ -1278,6 +1283,26 @@ describe("AppDefinition catalog", () => {
       "supabase:mcp-api-key:projectRef",
       "supabase:mcp-oauth:projectRef",
     ]);
+  });
+  it("recognizes only reviewed REST connectors, each of which really is a REST method", () => {
+    // A `rest_api` connection reaches the gateway only through this set, and a
+    // connection it does not recognize gets no `rest_api` tool application. A
+    // slug typo here would silently leave a connector with an empty catalog.
+    for (const slug of REST_CONNECTOR_SLUGS) {
+      const app = CONNECTABLE_APP_DEFINITIONS.find((entry) => entry.slug === slug);
+      expect(app, slug).toBeDefined();
+      expect(
+        app!.methods.some((method) => method.transport === "rest_api"),
+        slug,
+      ).toBe(true);
+      expect(isRestConnectorConnection({ transport: "rest_api", config: { sourceTemplateKey: slug } })).toBe(true);
+    }
+    // A hand-made generic REST connection has no execution adapter.
+    expect(isRestConnectorConnection({ transport: "rest_api", config: {} })).toBe(false);
+    expect(isRestConnectorConnection({ transport: "rest_api", config: null })).toBe(false);
+    expect(isRestConnectorConnection({ transport: "rest_api", config: { sourceTemplateKey: "linear" } })).toBe(false);
+    // The transport, not just the slug, decides.
+    expect(isRestConnectorConnection({ transport: "mcp_remote", config: { sourceTemplateKey: "home-assistant" } })).toBe(false);
   });
   it("limits Vercel Connect setup to the reviewed pilot methods", () => {
     const reviewed = APP_DEFINITIONS.flatMap((app) =>

@@ -14,7 +14,8 @@ Long-term memory: [Experimental memory connectors](./MEMORY.md).
 
 Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
 [Gmail](./GMAIL.md), [Asana](./ASANA.md), [Sentry](./SENTRY.md), [PostHog](./POSTHOG.md), [Neon](./NEON.md), [Superagent](./SUPERAGENT.md), [Gauge](./GAUGE.md),
-[AgentMail](./AGENTMAIL.md), [Telem.AI](./TELEM.md), [iMessage Photon](./IMESSAGE-PHOTON.md), and
+[AgentMail](./AGENTMAIL.md), [Telem.AI](./TELEM.md), [iMessage Photon](./IMESSAGE-PHOTON.md),
+[Home Assistant](./HOME-ASSISTANT.md), and
 [Enterpret](./ENTERPRET.md). Optional credential custody:
 [Vercel Connect](./VERCEL-CONNECT.md).
 

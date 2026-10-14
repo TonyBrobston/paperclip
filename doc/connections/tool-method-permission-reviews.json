@@ -2632,6 +2632,24 @@
       "reviewedAt": "2026-10-09",
       "liveProof": "Paperclip Apps qualification passed: connected the public-mcp method from the natural Connectors catalog; initialization/discovery showed exactly 4 Read actions and 0 Write actions. Restricted agent access to Just agents I pick with 0 selected; the public method requires no identity. A bounded hf_fs search of hf://docs for MCP with limit 3 succeeded (3 public doc entries; UI preview reported one successful result row) in 0.7s. After reload, the page still showed Connected, 4 actions, Read 4, Write 0, and no agents can use this connection; the same query succeeded again in 0.8s. The Test dialog reported the direct call ran as Connector Tester; no heartbeat/agent execution or other provider tool call occurred.",
       "evidenceLimit": "Qualification used only public documentation and did not use a Hugging Face account, OAuth, API key, private repo, write, inference, Space execution, or job. Anonymous endpoint was directly probed separately and returned 4 read tools, matching Paperclip discovery. The setup flow says no identity required; a one-member human audience was saved before reload, but human identity controls were not shown after reload. A root browser inspection confirmed four read actions and zero agents selected; a privacy-safe permissions screenshot was saved. Rate limits and later provider catalog changes remain outside this proof."
+    },
+    {
+      "app": "home-assistant",
+      "method": "rest-token",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Read the entity registry and live state, the service registry, the configuration summary, state history, the logbook and the error log; render a Jinja template against live state; validate the YAML configuration; and call any Home Assistant service. No tool writes automations.yaml or any other configuration file: /api/config/automation/config/<id> rewrites that file in place and would conflict with a Git-managed configuration.",
+      "evidence": [
+        "https://developers.home-assistant.io/docs/api/rest/",
+        "https://www.home-assistant.io/docs/authentication/#your-account-profile",
+        "https://www.home-assistant.io/integrations/mcp_server/"
+      ],
+      "reviewedAt": "2026-10-14",
+      "liveProof": "not-run",
+      "keyPermissions": "A Home Assistant long-lived access token inherits every permission of the account that created it. Home Assistant does not support scoping a token to specific entities, domains or read-only use, so the credential field tells the operator to issue the token from an account carrying only the access its agents need, and the connector's write surface is a single destructive action (home_assistant_call_service) that an operator can set to Ask first or Off. Paperclip cannot reduce an already-issued token's permissions; revoking it in the Home Assistant profile screen is the immediate cut-off.",
+      "evidenceLimit": "Reviewed against official Home Assistant REST API and authentication documentation. No account-bound read or write was executed against a live Home Assistant instance during this review; the connector is self-hosted, so there is no provider-hosted endpoint to probe without an operator's token and address."
     }
   ]
 }

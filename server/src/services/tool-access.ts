@@ -12,8 +12,14 @@ import { defaultConnectionAgentInstructions } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
 import { mcpDiscoveryHttpFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "./mcp-connection-failure.js";
 import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
-import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
+import {
+  BROWSER_USE_TOOLS,
+  HOME_ASSISTANT_TOOLS,
+  REST_CONNECTOR_SLUGS,
+  isRestConnectorConnection,
+} from "@paperclipai/shared";
 import { browserUseClient, isBrowserUseConnection } from "./browser-use-client.js";
+import { isHomeAssistantConnection, probeHomeAssistant } from "./connectors/home-assistant.js";
 import { browserUseService } from "./browser-use.js";
 import { COGNEE_STDIO_TEMPLATE, cogneeCloudUrl } from "./cognee-connection.js";
 import { isMemoryConnectorId, isRemoteMcpConnectorMethod, connectionPurposeTransportSchema } from "@paperclipai/shared";
@@ -2393,6 +2399,12 @@ export function classifyRisk(
   }
   if (sourceTemplateKey === "browser-use-cloud") {
     return BROWSER_USE_TOOLS.find(t => t.name === tool.name)?.annotations.readOnlyHint ? "read" : "destructive";
+  }
+  if (sourceTemplateKey === "home-assistant") {
+    // The reviewed catalog is the authority. A Home Assistant service call can
+    // unlock a door or reload configuration, so the one write action is
+    // destructive rather than merely a write.
+    return HOME_ASSISTANT_TOOLS.find(t => t.name === tool.name)?.annotations.readOnlyHint ? "read" : "destructive";
   }
   if (sourceTemplateKey === "railway") {
     const reviewed = railwayRisk(normalizedToolName);
@@ -7494,6 +7506,15 @@ export function toolAccessService(
       const headers = credentialHeaders ?? await resolveCredentialHeaders(connection, actor);
       await browserUseClient(headers, (url, init) => requestRemoteHttpEndpoint(new URL(url), init), connection.id).probe();
       return BROWSER_USE_TOOLS;
+    }
+    if (isHomeAssistantConnection(connection)) {
+      const headers = credentialHeaders ?? await resolveCredentialHeaders(connection, actor);
+      // GET /api/ needs the token, so this proves reachability and the
+      // credential without reading any household data.
+      await probeHomeAssistant(connection, headers, {
+        allowPrivateNetwork: allowPrivateRemoteEndpoints(),
+      });
+      return HOME_ASSISTANT_TOOLS;
     }
     if (isAgentMailConnection(connection)) {
       await validateAgentMailConnection(connection);
@@ -13151,7 +13172,7 @@ export function toolAccessService(
                 applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
                 name: applicationName,
                 description: safeApplicationDescription,
-                type: transport === "rest_api" && galleryEntry?.slug === "browser-use-cloud" ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+                type: transport === "rest_api" && REST_CONNECTOR_SLUGS.has(galleryEntry?.slug ?? "") ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
                 status: "draft",
                 metadata: galleryEntry
                   ? {
@@ -18111,7 +18132,7 @@ export function toolAccessService(
             companyId,
             applicationKey: normalizeKey(input.applicationName ?? input.name),
             name: input.applicationName ?? input.name,
-            type: isBrowserUseConnection({ transport, config }) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+            type: isRestConnectorConnection({ transport, config }) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
             status: "active",
             metadata: {},
           })

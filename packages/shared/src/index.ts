@@ -333,8 +333,10 @@ export {
   getRecommendedConnectionMethod,
   isConnectableAppSlug,
   isAppStoreVisibleSlug,
+  isRestConnectorConnection,
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
+  REST_CONNECTOR_SLUGS,
 } from "./app-definitions.js";
 export {
   connectionSetupStateForApp,
@@ -2843,6 +2845,7 @@ export { resolveAgentInstructionCandidateSchema, type ResolveAgentInstructionCan
 
 export { isHeartbeatRunVisibleInMine } from "./heartbeat-inbox.js";
 export * from "./browser-use.js";
+export * from "./home-assistant.js";
 
 export * from "./types/skill-source.js";
 export * from "./validators/skill-source.js";

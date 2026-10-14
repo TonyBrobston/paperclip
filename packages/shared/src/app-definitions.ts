@@ -9,6 +9,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "agentmail",
   "browser-use-cloud",
   "cognee",
+  "home-assistant",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "monday",
   "enterpret",
@@ -76,6 +77,30 @@ export const APP_STORE_HIDDEN_SLUGS = new Set([
 export const APP_STORE_DEFINITIONS = CONNECTABLE_APP_DEFINITIONS.filter((app) =>
   !APP_STORE_HIDDEN_SLUGS.has(app.slug)
 );
+
+/**
+ * Connectors whose `rest_api` transport is executed by a Paperclip connector
+ * module rather than spoken to as MCP.
+ *
+ * Their connections still get a `rest_api` tool application, a risk-classified
+ * catalog, action policies, the gateway and audit; only the wire protocol
+ * differs. A `rest_api` connection outside this set has no execution adapter
+ * and must not be exposed through the gateway — see the transport table in
+ * `doc/connections/CONNECTOR-PLAYBOOK.md`.
+ */
+export const REST_CONNECTOR_SLUGS = new Set(["browser-use-cloud", "home-assistant"]);
+
+export function isRestConnectorConnection(connection: {
+  transport: string;
+  config?: Record<string, unknown> | null;
+}): boolean {
+  const sourceTemplateKey = connection.config?.sourceTemplateKey;
+  return (
+    connection.transport === "rest_api" &&
+    typeof sourceTemplateKey === "string" &&
+    REST_CONNECTOR_SLUGS.has(sourceTemplateKey)
+  );
+}
 
 export const DEFAULT_OWNERSHIP_AVAILABILITY: Record<ToolConnectionOwnership, boolean> = {
   platform_shared: false,

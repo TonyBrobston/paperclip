@@ -1,0 +1,74 @@
+{
+  "agentInstructions": {
+    "id": "home-assistant.usage",
+    "version": 1,
+    "text": "Use Home Assistant to look things up before writing anything. Never guess an entity ID: find it with list_entities (filter by domain and search) and read its attributes with get_state. Confirm a service and its fields with list_services before calling it, and check a Jinja condition or value_template with render_template against live state before you put it in YAML. Use get_history, get_logbook, get_error_log and check_config to diagnose an automation that did not fire. Author automations, scripts and scenes in the Home Assistant configuration repository and deploy them the normal way: this connection deliberately has no tool that writes automations.yaml, because rewriting that file through the API conflicts with a Git-managed configuration. call_service acts on the real house and can switch devices, unlock locks or reload configuration, so target the narrowest entity that does the job, prefer a reversible action, and do not call it to explore. Respect action permissions and approvals; if a call fails, report what did and did not happen rather than retrying a service call that may already have taken effect."
+  },
+  "schemaVersion": 1,
+  "slug": "home-assistant",
+  "name": "Home Assistant",
+  "description": "Look up entities and live state in Home Assistant and call its services.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/home-assistant.svg"
+  },
+  "urlPatterns": [
+    "https://*.ui.nabu.casa/*"
+  ],
+  "docsUrl": "https://developers.home-assistant.io/docs/api/rest/",
+  "methods": [
+    {
+      "key": "rest-token",
+      "label": "Long-lived access token",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a long-lived access token to read entities and live state and to call services on your own Home Assistant instance.",
+      "defaults": {},
+      "tenantFields": [
+        {
+          "key": "baseUrl",
+          "label": "Home Assistant address",
+          "type": "text",
+          "required": true,
+          "placeholder": "http://homeassistant.local:8123",
+          "helperMd": "The address you open Home Assistant at, without a trailing `/api`. A private or LAN address works when this Paperclip deployment is not publicly exposed.",
+          "validation": {
+            "pattern": "^https?://[^\\s/?#]+(?:/[^\\s?#]*)?$",
+            "maxLength": 2048
+          }
+        }
+      ],
+      "credentialFields": [
+        {
+          "key": "token",
+          "label": "Long-lived access token",
+          "type": "password",
+          "required": true,
+          "placeholder": "eyJhbGciOi…",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "guidanceMd": "In Home Assistant open your profile → **Security** → **Long-lived access tokens** → **Create token**, then paste it below with your instance address. The token inherits your own Home Assistant permissions, so create it from an account with only the access your agents need.",
+      "consoleLinks": {
+        "docs": "https://developers.home-assistant.io/docs/api/rest/"
+      },
+      "warnings": [
+        "A long-lived access token carries the full permissions of the Home Assistant account that created it. Home Assistant cannot narrow it to specific entities or domains.",
+        "Calling a service acts on real devices. Review the action policy for home_assistant_call_service before leaving it Allowed.",
+        "This connector does not write automations.yaml. Authoring automations through the API rewrites that file in place, which conflicts with a Git-managed configuration."
+      ],
+      "riskTier": "S4"
+    }
+  ]
+}
