@@ -310,12 +310,12 @@ describe("Home Assistant failure handling", () => {
       {
         allowPrivateNetwork: true,
         request: async () => {
-          throw new Error("connect ECONNREFUSED 10.0.0.4:8123");
+          throw new Error("connect ECONNREFUSED 192.0.2.10:8123");
         },
       },
     );
     await expect(failing).rejects.toThrowError(/could not be reached at the configured address/);
-    await expect(failing).rejects.not.toThrowError(/10\.0\.0\.4/);
+    await expect(failing).rejects.not.toThrowError(/192\.0\.2\.10/);
   });
 
   it("rejects an unknown tool name", async () => {
