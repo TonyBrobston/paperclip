@@ -93,6 +93,17 @@ describe("Home Assistant connection identity", () => {
     expect(homeAssistantApiUrl("http://ha.example.test:8123/", "/api/states").toString()).toBe(
       "http://ha.example.test:8123/api/states",
     );
+    // A stored query or fragment would silently rewrite every built request.
+    expect(() => homeAssistantApiUrl("http://ha.example.test:8123?x=1", "/api/")).toThrowError(
+      /query or fragment/,
+    );
+    expect(() => homeAssistantApiUrl("http://ha.example.test:8123#x", "/api/")).toThrowError(
+      /query or fragment/,
+    );
+    // A reverse-proxy path prefix is preserved.
+    expect(homeAssistantApiUrl("https://ha.example.test/ha", "/api/states").toString()).toBe(
+      "https://ha.example.test/ha/api/states",
+    );
   });
 });
 

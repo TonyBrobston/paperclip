@@ -30,13 +30,17 @@ export const HOME_ASSISTANT_LOG_TAIL_MAX_BYTES = 64 * 1024;
 
 export function homeAssistantApiUrl(baseUrl: string, path: string): URL {
   const trimmed = baseUrl.replace(/\/+$/, "");
-  const url = new URL(`${trimmed}${path}`);
   // A base URL carrying credentials, a query or a fragment would silently
-  // rewrite every request built from it.
-  if (url.username || url.password) {
+  // rewrite every request built from it. The setup field pattern already
+  // rejects these; re-check here because this runs against stored config.
+  const base = new URL(trimmed);
+  if (base.username || base.password) {
     throw new Error("Home Assistant base URL must not contain credentials");
   }
-  return url;
+  if (base.search || base.hash) {
+    throw new Error("Home Assistant base URL must not contain a query or fragment");
+  }
+  return new URL(`${trimmed}${path}`);
 }
 
 const entityId = {
