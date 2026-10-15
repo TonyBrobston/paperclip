@@ -26,11 +26,15 @@ jobs:
       # does run and report there; a private fork does not, and the action then
       # hard-fails with "Dependency review is not supported on this repository",
       # taking the whole run red — on `pull_request_target`, which means a
-      # failure mail to the fork owner for every PR. Keep the step enabled
-      # everywhere so a fork still gets the finding, but let a fork absorb that
-      # infrastructure failure instead of reporting it as a review failure.
-      # Upstream keeps it blocking: the expression is false on the canonical
-      # repository, the same `github.repository` check docker.yml uses.
+      # failure mail to the fork owner for every PR. The step stays enabled
+      # everywhere, so on a fork its findings are still in the job log — but
+      # be clear about what the tolerance costs: `continue-on-error` cannot
+      # tell a missing dependency graph from a PR that really does add a
+      # package with a critical CVE. On a fork both are a green `review`, so a
+      # green `review` there is not a dependency verdict; read the step's log
+      # for that. Upstream keeps it fully blocking: the expression is false on
+      # the canonical repository, the same `github.repository` check
+      # docker.yml uses.
       - name: Dependency Review
         continue-on-error: ${{ github.repository != 'paperclipai/paperclip' }}
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0

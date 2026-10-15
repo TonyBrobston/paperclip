@@ -13,7 +13,7 @@ even when its pull request is open and green.
 | --- | --- | --- |
 | `PAPERCLIP_ALLOW_LOCAL_API_CALLS`: send agent-facing requests to the container's own listener, so agent runtimes behind an authenticating edge can still reach the API, the MCP gateways, and the GitHub credential broker | `feat/allow-local-runtime-api-calls`, merged by [#1](https://github.com/TonyBrobston/paperclip/pull/1) | not submitted |
 | Launch the installed web app in standalone display mode, so the Android PWA installs as an app instead of a shortcut. Also retargets `ui/src/lib/pwa-install-mode.test.ts`, whose upstream copy pins the old value | `fix/android-pwa-master`, merged by [#3](https://github.com/TonyBrobston/paperclip/pull/3) | open upstream as [#13756](https://github.com/paperclipai/paperclip/pull/13756) and [#13461](https://github.com/paperclipai/paperclip/pull/13461); drop this row once either lands |
-| CI that can pass under this owner: `docker.yml` lowercases the GHCR reference it composes, `commitperclip-review.yml` skips the bot gates that need an upstream-only secret and stops a missing dependency graph from failing the run, and `agent-runtime-images.yml` skips off the canonical repository | `fix/fork-ci-green`, merged by [#10](https://github.com/TonyBrobston/paperclip/pull/10) | not submitted |
+| CI that can pass under this owner, as three `if:` conditions and one `continue-on-error`: `docker.yml` and `agent-runtime-images.yml` skip off the canonical repository, because a fork cannot publish their images and nothing here pulls them, and `commitperclip-review.yml` skips the bot gates that need an upstream-only secret and stops a missing dependency graph from failing the run | `fix/fork-ci-green`, merged by [#10](https://github.com/TonyBrobston/paperclip/pull/10) | not submitted |
 
 Add a row when a change lands on `master`, and drop one once upstream ships the
 same behavior and a merge brings it in.
@@ -63,7 +63,7 @@ Two workflows failed on every run here, and each failure mailed the repository
 owner, because both run on a path GitHub notifies about: `docker.yml` on a
 `master` push, and `commitperclip-review.yml` on `pull_request_target`.
 
-`docker.yml` interpolated `github.repository` straight into the image name, the
+`docker.yml` interpolates `github.repository` straight into the image name, the
 per-architecture build cache references, the manifest-list digests and the
 canary retag. That value carries the owner's display capitalisation, and a
 Docker reference must be lowercase, so buildx refused the build before the
@@ -74,7 +74,25 @@ invalid reference format: repository name (TonyBrobston/paperclip) must be lower
 ```
 
 The slug `paperclipai/paperclip` is already lowercase, so upstream never sees
-it. `commitperclip-review.yml` failed on two steps in turn. `Dependency Review`
+it.
+
+Lowercasing the slug is the correct fix for that bug, and it is deliberately
+**not** what this fork carries. Doing it here means composing the reference in
+a step, rewriting the two upstream-owned test files that pin the raw
+interpolation, and — the part that settles it — switching *on* image publishing
+this fork has never done: two architecture images, a manifest list and a
+`mode=max` build cache pushed to `ghcr.io/tonybrobston/paperclip` on every
+`master` push, which nothing consumes, because the self-hosted deployment
+builds the `paperclip` service from source as `tbro/paperclip:local`. The fork
+does not want these images; it only wants to stop being mailed about them. So
+`build-and-push` skips off the canonical repository and `merge-and-push` and
+`promote_canary_channel` skip with it through `needs:`. That is one `if:` and
+no test churn, and it leaves `docker.yml`'s body byte-identical to upstream.
+The lowercasing belongs in an upstream pull request, where the images are
+actually wanted; it is not carried here and this row should not be read as
+precedent for carrying it.
+
+`commitperclip-review.yml` failed on two steps in turn. `Dependency Review`
 needs the repository's dependency graph, which this fork lacked while it was
 private; that is now fixed by the repository setting rather than by this
 workflow, so the step still runs here and reports its finding. It is only
@@ -84,13 +102,12 @@ review failure. `Generate commitperclip token` needs the `COMMITPERCLIP_KEY`
 organisation secret, which a fork has no way to obtain, so the bot gates skip
 when it is absent.
 
-The lowercase half is generic, which by the rule below belongs upstream rather
-than here. It is carried anyway because the upstream submission path from this
-fork is closed, and a red `master` mailing the owner on every refresh is a cost
-that is paid now. Drop both halves of this row if upstream ever takes the
-lowercasing. Nothing else in the row would survive upstream review: the bot
-gates and the dependency-review tolerance are deliberately keyed to the
-canonical repository, where both stay strict.
+Nothing in this row would survive upstream review, which is the point: all four
+conditions are deliberately keyed to the canonical repository, so upstream
+behaviour is unchanged by every one of them — the two skips are true there, and
+the dependency-review tolerance is false there and stays fully blocking. That
+is also what keeps the refresh cost low: a merge conflict here can only ever be
+on an `if:` line or a comment, never on logic upstream might rewrite.
 
 A fork cannot test the `commitperclip-review.yml` half before it is on
 `master`. `pull_request_target` always loads the workflow file from the base
@@ -111,6 +128,15 @@ produced fourteen, all in the local-API surface. So a change earns a row only
 when the deployment needs it *and* upstream will not take it as-is. A fix that
 is correct for everyone belongs upstream, where it arrives through the next
 refresh instead of being re-merged forever.
+
+Recorded example: the GHCR lowercasing described above. `docker.yml` genuinely
+is broken for every mixed-case owner, and the fix is eight lines. Carrying it
+would also have meant rewriting two upstream-owned test files that pin the raw
+interpolation, so each refresh would conflict on test assertions upstream edits
+— to gain images nothing pulls. Skipping the job off the canonical repository
+stops the mail with one `if:` and no divergence in the workflow body, which is
+the cheaper trade even though it is the less complete fix. The lowercasing is
+kept for an upstream submission.
 
 Recorded example: [#4](https://github.com/TonyBrobston/paperclip/pull/4) made
 `/site.webmanifest` revalidate instead of sitting on its one-hour TTL, while
