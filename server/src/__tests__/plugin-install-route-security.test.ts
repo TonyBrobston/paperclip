@@ -368,6 +368,20 @@ describeEmbeddedPostgres("plugin install route security floor", () => {
       expect(mockLifecycle.load).not.toHaveBeenCalled();
     });
 
+    it("names the missing flag when a path arrives without isLocalPath", async () => {
+      const app = await createInstallApp(db);
+
+      // Without the guard this reaches npm, which reports a missing
+      // package.json and leaves the caller debugging npm instead of the flag.
+      const res = await request(app)
+        .post("/api/plugins/install")
+        .send({ packageName: "/paperclip/plugins/paperclip-plugin-example" });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("isLocalPath: true");
+      expect(mockLifecycle.load).not.toHaveBeenCalled();
+    });
+
     it("does not apply the cloud floor when PAPERCLIP_MANAGED_CONFIG is absent", async () => {
       const app = await createInstallApp(db);
 

@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { PluginRecord } from "@paperclipai/shared";
+import { isPluginInstallPathSyntax, type PluginRecord } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
@@ -57,6 +57,20 @@ function isExperimentalPluginIdentity(input: {
   return input.manifestJson?.environmentDrivers?.some((driver) => driver.kind === "sandbox_provider") === true;
 }
 
+/**
+ * Install request plus the surface that started it.
+ *
+ * Both surfaces can send `isLocalPath`, so the flag no longer identifies which
+ * one is in flight. `origin` keeps the bundled section's pending and error
+ * states attached to its own buttons.
+ */
+type PluginInstallMutationVariables = {
+  packageName: string;
+  version?: string;
+  isLocalPath?: boolean;
+  origin: "dialog" | "bundled";
+};
+
 function ExperimentalBadge() {
   return (
     <Badge
@@ -73,7 +87,7 @@ function ExperimentalBadge() {
  *
  * Provides a management UI for the Paperclip plugin system:
  * - Lists all installed plugins with their status, version, and category badges.
- * - Allows installing new plugins by npm package name.
+ * - Allows installing new plugins by npm package name or by a path on the server.
  * - Provides per-plugin actions: enable, disable, navigate to settings.
  * - Uninstall with a two-step confirmation dialog to prevent accidental removal.
  *
@@ -92,6 +106,7 @@ export function PluginManager() {
   const { pushToast } = useToastActions();
 
   const [installPackage, setInstallPackage] = useState("");
+  const installPackageIsLocalPath = isPluginInstallPathSyntax(installPackage);
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [uninstallPluginId, setUninstallPluginId] = useState<string | null>(null);
   const [uninstallPluginName, setUninstallPluginName] = useState<string>("");
@@ -122,7 +137,7 @@ export function PluginManager() {
   };
 
   const installMutation = useMutation({
-    mutationFn: (params: { packageName: string; version?: string; isLocalPath?: boolean }) =>
+    mutationFn: ({ origin: _origin, ...params }: PluginInstallMutationVariables) =>
       pluginsApi.install(params),
     onSuccess: () => {
       invalidatePluginQueries();
@@ -172,9 +187,9 @@ export function PluginManager() {
   const bundledPlugins = bundledQuery.data ?? [];
   const installedByPackageName = new Map(installedPlugins.map((plugin) => [plugin.packageName, plugin]));
   const bundledByPackageName = new Map(bundledPlugins.map((plugin) => [plugin.packageName, plugin]));
-  // Scope the in-section banner to bundled (local-path) installs so an npm-dialog
-  // install failure does not surface its error in the bundled-plugins section.
-  const installErrorMessage = installMutation.variables?.isLocalPath
+  // Scope the in-section banner to bundled installs so a dialog install failure
+  // does not surface its error in the bundled-plugins section.
+  const installErrorMessage = installMutation.variables?.origin === "bundled"
     ? installMutation.error?.message ?? null
     : null;
   const errorSummaryByPluginId = useMemo(
@@ -207,25 +222,38 @@ export function PluginManager() {
             <DialogHeader>
               <DialogTitle>Install Plugin</DialogTitle>
               <DialogDescription>
-                Enter the npm package name of the plugin you wish to install.
+                Enter an npm package name, or an absolute path to a plugin directory on
+                the server.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
-                <Label htmlFor="packageName">npm Package Name</Label>
+                <Label htmlFor="packageName">Package name or server path</Label>
                 <Input
                   id="packageName"
                   placeholder="@paperclipai/plugin-example"
                   value={installPackage}
                   onChange={(e) => setInstallPackage(e.target.value)}
                 />
+                {installPackageIsLocalPath && (
+                  <p className="text-xs text-muted-foreground">
+                    Installing from a path on the machine running Paperclip. The plugin is
+                    read from this directory on every activation, so it must stay in place.
+                  </p>
+                )}
               </div>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>Cancel</Button>
               <Button
-                onClick={() => installMutation.mutate({ packageName: installPackage })}
-                disabled={!installPackage || installMutation.isPending}
+                onClick={() =>
+                  installMutation.mutate({
+                    packageName: installPackage.trim(),
+                    isLocalPath: installPackageIsLocalPath,
+                    origin: "dialog",
+                  })
+                }
+                disabled={!installPackage.trim() || installMutation.isPending}
               >
                 {installMutation.isPending ? "Installing..." : "Install"}
               </Button>
@@ -274,7 +302,7 @@ export function PluginManager() {
               const installedPlugin = installedByPackageName.get(bundledPlugin.packageName);
               const installPending =
                 installMutation.isPending &&
-                installMutation.variables?.isLocalPath &&
+                installMutation.variables?.origin === "bundled" &&
                 installMutation.variables.packageName === bundledPlugin.localPath;
 
               return (
@@ -335,6 +363,7 @@ export function PluginManager() {
                             installMutation.mutate({
                               packageName: bundledPlugin.localPath,
                               isLocalPath: true,
+                              origin: "bundled",
                             })
                           }
                         >
