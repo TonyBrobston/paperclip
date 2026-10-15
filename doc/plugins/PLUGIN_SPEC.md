@@ -1235,7 +1235,7 @@ The auto-generated form supports:
 - text inputs, number inputs, toggles, select dropdowns derived from schema types and enums
 - nested objects rendered as fieldsets
 - arrays rendered as repeatable field groups with add/remove controls
-- secret ref fields: any schema property annotated with `"format": "secret-ref"` renders as a secret picker that stores the shared `{ type: "secret_ref", secretId, version? }` object shape and resolves through the Paperclip secret provider system rather than a plain text input
+- secret ref fields: any schema property annotated with `"format": "secret-ref"` renders as a secret picker that stores the shared `{ type: "secret_ref", secretId, version? }` object shape and resolves through the Paperclip secret provider system rather than a plain text input. Declare the property with the type of the raw value — `"type": "string"` for an API key — as the first-party manifests do. The host accepts either that raw value or the binding object at a `secret-ref` path, so the declared type does not have to describe the binding.
 - validation messages derived from schema constraints (`required`, `minLength`, `pattern`, `minimum`, etc.)
 - a "Test Connection" action if the plugin declares a `validateConfig` RPC method — the host calls it and displays the result inline
 
