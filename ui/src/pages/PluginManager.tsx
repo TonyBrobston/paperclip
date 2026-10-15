@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { isPluginInstallPathSyntax, type PluginRecord } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
+import { AlertTriangle, FlaskConical, FolderOpen, Package, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
@@ -106,7 +106,12 @@ export function PluginManager() {
   const { pushToast } = useToastActions();
 
   const [installPackage, setInstallPackage] = useState("");
-  const installPackageIsLocalPath = isPluginInstallPathSyntax(installPackage);
+  const [installFromLocalPath, setInstallFromLocalPath] = useState(false);
+  // A pasted path installs as a path even in npm mode. Left on the npm branch
+  // it reaches `npm install <dir>`, whose error names npm and not the source
+  // kind. Choosing "Local path" is still authoritative for anything ambiguous.
+  const installPackageIsLocalPath =
+    installFromLocalPath || isPluginInstallPathSyntax(installPackage);
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [uninstallPluginId, setUninstallPluginId] = useState<string | null>(null);
   const [uninstallPluginName, setUninstallPluginName] = useState<string>("");
@@ -143,6 +148,7 @@ export function PluginManager() {
       invalidatePluginQueries();
       setInstallDialogOpen(false);
       setInstallPackage("");
+      setInstallFromLocalPath(false);
       pushToast({ title: "Plugin installed successfully", tone: "success" });
     },
     onError: (err: Error) => {
@@ -222,23 +228,65 @@ export function PluginManager() {
             <DialogHeader>
               <DialogTitle>Install Plugin</DialogTitle>
               <DialogDescription>
-                Enter an npm package name, or an absolute path to a plugin directory on
-                the server.
+                Install from npm, or from a plugin directory on the machine that runs
+                Paperclip.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors",
+                    !installFromLocalPath
+                      ? "border-foreground bg-accent text-foreground"
+                      : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                  )}
+                  onClick={() => {
+                    setInstallFromLocalPath(false);
+                    setInstallPackage("");
+                  }}
+                >
+                  <Package className="h-3.5 w-3.5" />
+                  npm package
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors",
+                    installFromLocalPath
+                      ? "border-foreground bg-accent text-foreground"
+                      : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                  )}
+                  onClick={() => {
+                    setInstallFromLocalPath(true);
+                    setInstallPackage("");
+                  }}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  Local path
+                </button>
+              </div>
+
               <div className="grid gap-2">
-                <Label htmlFor="packageName">Package name or server path</Label>
+                <Label htmlFor="packageName">
+                  {installFromLocalPath ? "Path to plugin package" : "npm Package Name"}
+                </Label>
                 <Input
                   id="packageName"
-                  placeholder="@paperclipai/plugin-example"
+                  className={installFromLocalPath ? "font-mono text-xs" : undefined}
+                  placeholder={
+                    installFromLocalPath
+                      ? "/paperclip/plugins/my-plugin"
+                      : "@paperclipai/plugin-example"
+                  }
                   value={installPackage}
                   onChange={(e) => setInstallPackage(e.target.value)}
                 />
                 {installPackageIsLocalPath && (
                   <p className="text-xs text-muted-foreground">
-                    Installing from a path on the machine running Paperclip. The plugin is
-                    read from this directory on every activation, so it must stay in place.
+                    The path is read on the machine that runs Paperclip, not on this one.
+                    That directory is re-read on every activation, so it must stay in place.
                   </p>
                 )}
               </div>

@@ -75,14 +75,24 @@ async function renderPluginManager() {
   await flushReact();
 }
 
-/** Open the "Install Plugin" dialog and submit `source` through its one text box. */
-async function submitInstallSource(source: string) {
+async function clickButton(label: string) {
+  const button = [...document.querySelectorAll("button")].find(
+    (candidate) => candidate.textContent?.trim() === label,
+  );
+  if (!button) throw new Error(`no button labelled "${label}"`);
+  await act(() => button.click());
+  await flushReact();
+}
+
+async function openInstallDialog() {
   const openButton = [...container.querySelectorAll("button")].find((button) =>
     button.textContent?.includes("Install Plugin"),
   );
   await act(() => openButton?.click());
   await flushReact();
+}
 
+async function typeInstallSource(source: string) {
   const input = document.querySelector<HTMLInputElement>("#packageName");
   if (!input) throw new Error("install dialog did not render its package input");
 
@@ -92,12 +102,13 @@ async function submitInstallSource(source: string) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await flushReact();
+}
 
-  const submit = [...document.querySelectorAll("button")].find(
-    (button) => button.textContent?.trim() === "Install",
-  );
-  await act(() => submit?.click());
-  await flushReact();
+/** Open the install dialog and submit `source` without touching the source toggle. */
+async function submitInstallSource(source: string) {
+  await openInstallDialog();
+  await typeInstallSource(source);
+  await clickButton("Install");
 }
 
 describe("PluginManager install dialog source classification", () => {
@@ -135,11 +146,33 @@ describe("PluginManager install dialog source classification", () => {
 
   it("trims a pasted path before sending it", async () => {
     await renderPluginManager();
-    await submitInstallSource("  /opt/paperclip-plugin-home-assistant  ");
+    await submitInstallSource("  /opt/paperclip-plugin-example  ");
 
     expect(mockPluginsApi.install).toHaveBeenCalledWith({
-      packageName: "/opt/paperclip-plugin-home-assistant",
+      packageName: "/opt/paperclip-plugin-example",
       isLocalPath: true,
     });
+  });
+
+  it("honours the Local path toggle for a source that is not path-shaped", async () => {
+    await renderPluginManager();
+    await openInstallDialog();
+    await clickButton("Local path");
+    await typeInstallSource("plugins/my-plugin");
+    await clickButton("Install");
+
+    expect(mockPluginsApi.install).toHaveBeenCalledWith({
+      packageName: "plugins/my-plugin",
+      isLocalPath: true,
+    });
+  });
+
+  it("clears the entered source when the install source changes", async () => {
+    await renderPluginManager();
+    await openInstallDialog();
+    await typeInstallSource("@paperclipai/plugin-example");
+    await clickButton("Local path");
+
+    expect(document.querySelector<HTMLInputElement>("#packageName")?.value).toBe("");
   });
 });
