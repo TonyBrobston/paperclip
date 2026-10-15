@@ -9,12 +9,15 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const serviceMocks = vi.hoisted(() => ({
+  pluginToolNames: vi.fn(),
   exportFiles: vi.fn(),
   readCommittedForRuntime: vi.fn(),
   getEffectiveProfilesForAgent: vi.fn(),
   githubBotConnectionIdsForRun: vi.fn(),
   spekoToolsForSession: vi.fn(),
 }));
+
+vi.mock("../plugin-runtime-tools.js", () => ({ resolveRuntimePluginToolNames: serviceMocks.pluginToolNames }));
 
 vi.mock("../voice/speko-agent-tools.js", () => ({ spekoToolsForSession: serviceMocks.spekoToolsForSession }));
 vi.mock("../chat-github-tools.js", () => ({
@@ -58,6 +61,7 @@ async function makeTreeWritable(target: string): Promise<void> {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  serviceMocks.pluginToolNames.mockResolvedValue([]);
   serviceMocks.readCommittedForRuntime.mockResolvedValue(null);
   serviceMocks.githubBotConnectionIdsForRun.mockResolvedValue(new Set());
   serviceMocks.spekoToolsForSession.mockResolvedValue([]);
@@ -386,7 +390,7 @@ it("pins both permitted GitHub tool catalogs even when another user’s health p
   const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) } as unknown as Db;
   const snapshot = await resolveNativeRuntimeMcpSnapshot({ db, agent: { id: "agent-1", companyId: "company-1" }, runId: "run-1" });
   const expected = createHash("sha256").update(JSON.stringify({
-    version: 1, agentId: "agent-1", connections: ["github-A", "github-B"],
+    version: 2, agentId: "agent-1", pluginTools: [], connections: ["github-A", "github-B"],
     tools: ["github-A-get_me", "github-B-get_me"],
   })).digest("hex");
   expect(snapshot.digest).toBe(expected);

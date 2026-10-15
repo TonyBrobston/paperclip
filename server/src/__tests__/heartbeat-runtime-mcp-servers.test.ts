@@ -3,9 +3,11 @@ import express from "express";
 import request from "supertest";
 import { mcpGatewayProtocolRoutes } from "../routes/tool-gateway.js";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  plugins,
+  toolPolicies,
   activityLog,
   companies,
   companyMemberships,
@@ -30,6 +32,11 @@ import {
 import { buildPaperclipRuntimeMcpServers, createManagedMcpRunConfig } from "../services/heartbeat.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 
+import { createPluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
+import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { toolAccessService } from "../services/tool-access.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -58,6 +65,8 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.delete(toolProfileBindings);
     await db.delete(toolProfileEntries);
     await db.delete(toolProfiles);
+    await db.delete(toolPolicies);
+    await db.delete(plugins);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(agents);
@@ -302,6 +311,96 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     expect((rejection as ToolGatewayHttpError).reasonCode).toBe("gateway_token_run_context_invalid");
   });
 
+  it("delivers authorized plugin-only MCP tools, preserves snapshots, and revokes source access", async () => {
+    const [owner, other] = await seedAssignedAgents(2);
+    const { agent, run } = owner!;
+    const [profile] = await db.insert(toolProfiles).values({ companyId: agent.companyId,
+      profileKey: `plugins:${randomUUID()}`, name: "Owner plugin access", defaultAction: "deny" }).returning();
+    await db.insert(toolProfileBindings).values({ companyId: agent.companyId, profileId: profile!.id,
+      targetType: "agent", targetId: agent.id });
+    // Exercise agents with no usable connection-backed assignments.
+    await db.update(toolConnections).set({ enabled: false });
+    const call = vi.fn(async () => ({ content: "fixture read succeeded" }));
+    const dispatcher = createPluginToolDispatcher({ workerManager: {
+      isRunning: () => true, call,
+    } as unknown as PluginWorkerManager });
+    const names = ["tbro.bigcommerce:list_products", "tbro.home-assistant:list_entities"];
+    for (const [pluginKey, toolNames] of [
+      ["tbro.bigcommerce", ["list_products", "list_orders"]],
+      ["tbro.home-assistant", ["list_entities", "delete_entity"]],
+    ] as const) {
+      const manifest = {
+        id: pluginKey, apiVersion: 1, version: "1.0.0", displayName: pluginKey,
+        capabilities: ["agent.tools.register"], entrypoints: { worker: "worker.js" },
+        tools: toolNames.map(name => ({ name, displayName: name, description: name,
+          parametersSchema: { type: "object", properties: {} } })),
+      } as unknown as PaperclipPluginManifestV1;
+      const [plugin] = await db.insert(plugins).values({ pluginKey, packageName: pluginKey,
+        version: "1.0.0", status: "ready", manifestJson: manifest }).returning();
+      dispatcher.registerPluginTools(pluginKey, manifest, plugin!.id);
+    }
+    const grants = await db.insert(toolProfileEntries).values(names.map(toolName => ({
+      companyId: agent.companyId, profileId: profile!.id, selectorType: "tool_name", effect: "include", toolName,
+    }))).returning();
+    const snapshot = await resolveNativeRuntimeMcpSnapshot({ db, agent, runId: run.id });
+    expect(snapshot.bindingId).toBe(`native-mcp:${run.id}`);
+    const [server] = await buildPaperclipRuntimeMcpServers({ db, agent, runId: run.id, expectedAssignmentDigest: snapshot.digest });
+    expect(server).toBeDefined();
+    expect(server!.connectionId).toBe(`assignment:${snapshot.digest}`);
+    const [gateway] = await db.select().from(toolMcpGateways);
+    const service = createToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+    const app = express().use(express.json()).use(mcpGatewayProtocolRoutes(service));
+    const rpc = (method: string, params = {}) => request(app).post(`/mcp/gateways/${gateway!.gatewayPublicId}`)
+      .set("Authorization", `Bearer ${server!.token}`).send({ jsonrpc: "2.0", id: 1, method, params });
+    const listed = await rpc("tools/list").expect(200);
+    expect(listed.body.result.tools.map((tool: { name: string }) => tool.name).filter((name: string) => name.startsWith("tbro."))).toEqual(names);
+    for (const name of names) {
+      const result = await rpc("tools/call", { name, arguments: {} }).expect(200);
+      expect(JSON.stringify(result.body)).toContain("fixture read succeeded");
+    }
+    expect(call).toHaveBeenCalledTimes(2);
+    // Unassigned agents cannot obtain a plugin gateway.
+    expect(await buildPaperclipRuntimeMcpServers({ db, agent: other!.agent, runId: other!.run.id })).toEqual([]);
+    await expect(service.executeTool({ sessionToken: server!.token, gatewayId: gateway!.id,
+      tool: "tbro.home-assistant:delete_entity", parameters: {} })).rejects.toMatchObject({ status: 403 });
+    expect(call).toHaveBeenCalledTimes(2);
+    // Source conditions remain active after the exact-name snapshot is made.
+    await db.update(toolProfileEntries).set({ conditions: {
+      arguments: { fieldNotEquals: { denied: true } },
+    } }).where(eq(toolProfileEntries.id, grants[1]!.id));
+    await expect(service.executeTool({ sessionToken: server!.token, gatewayId: gateway!.id,
+      tool: names[1]!, parameters: { denied: true } })).rejects.toMatchObject({ status: 403 });
+    expect(call).toHaveBeenCalledTimes(2);
+    const approvalPolicy = await toolAccessPolicyService(db).createPolicy(agent.companyId, { name: "Ask before fixture read",
+      policyType: "require_approval", priority: 100, enabled: true, selectors: { toolName: names[0]! } });
+    expect(await toolAccessPolicyService(db).decide({ companyId: agent.companyId,
+      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      runContext: { heartbeatRunId: run.id, gatewayId: gateway!.id },
+      request: { toolName: names[0]!, providerType: "paperclip_plugin", riskLevel: "read", arguments: {} },
+    })).toMatchObject({ decision: "require_approval", allowed: false });
+    await db.delete(toolPolicies).where(eq(toolPolicies.id, approvalPolicy.id));
+    // New source grants require a new digest and cannot widen the old gateway.
+    await db.insert(toolProfileEntries).values({ companyId: agent.companyId, profileId: profile!.id,
+      selectorType: "tool_name", effect: "include", toolName: "tbro.bigcommerce:list_orders" });
+    expect(await buildPaperclipRuntimeMcpServers({ db, agent, runId: run.id, expectedAssignmentDigest: snapshot.digest })).toEqual([]);
+    await expect(service.executeTool({ sessionToken: server!.token, gatewayId: gateway!.id,
+      tool: "tbro.bigcommerce:list_orders", parameters: {} })).rejects.toMatchObject({ status: 403 });
+    // Removing an original grant revokes access even on the existing snapshot.
+    await db.delete(toolProfileEntries).where(eq(toolProfileEntries.id, grants[1]!.id));
+    const revoked = await rpc("tools/list").expect(200);
+    expect(revoked.body.result.tools.map((tool: { name: string }) => tool.name)).not.toContain(names[1]);
+    await expect(service.executeTool({ sessionToken: server!.token, gatewayId: gateway!.id,
+      tool: names[1]!, parameters: {} })).rejects.toMatchObject({ status: 403 });
+    expect(call).toHaveBeenCalledTimes(2);
+    // New runs reconstruct the same remaining assignment without profile edits.
+    const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: agent.companyId, agentId: agent.id,
+      status: "running", contextSnapshot: {} }).returning();
+    const next = await resolveNativeRuntimeMcpSnapshot({ db, agent, runId: nextRun!.id });
+    expect(next.digest).not.toBe(snapshot.digest);
+    expect(await buildPaperclipRuntimeMcpServers({ db, agent, runId: nextRun!.id,
+      expectedAssignmentDigest: next.digest })).toHaveLength(1);
+  });
+
   it("binds a reused run-scoped gateway that was created without an agent", async () => {
     const [owner] = await seedAssignedAgents(1);
     await buildPaperclipRuntimeMcpServers({ db, agent: owner!.agent, runId: owner!.run.id });
@@ -487,7 +586,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       },
     ]);
     await db.insert(toolProfileBindings).values(profiles.map((profile) => ({
-      companyId: company!.id, profileId: profile.id, targetType: "agent" as const, targetId: agent!.id,
+      companyId: company!.id, profileId: profile!.id, targetType: "agent" as const, targetId: agent!.id,
     })));
     await db.insert(toolConnectionInstalls).values({
       companyId: company!.id, connectionId: connection!.id, targetType: "agent", targetId: agent!.id,
@@ -778,7 +877,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     }))).returning();
     await db.insert(toolProfileEntries).values(profiles.map((profile, index) => ({
       companyId: company!.id,
-      profileId: profile.id,
+      profileId: profile!.id,
       selectorType: "connection" as const,
       effect: "include" as const,
       connectionId: connections[index]!.id,
@@ -787,7 +886,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       companyId: company!.id,
       name: `${connections[index]!.name} gateway`,
       slug: `gateway-${index}-${randomUUID().slice(0, 8)}`,
-      profileId: profile.id,
+      profileId: profile!.id,
       status: "active" as const,
     }))).returning();
     await db.insert(toolConnectionInstalls).values({

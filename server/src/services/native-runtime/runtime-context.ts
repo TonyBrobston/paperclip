@@ -1,3 +1,4 @@
+import { resolveRuntimePluginToolNames } from "../plugin-runtime-tools.js";
 import { spekoToolsForSession } from "../voice/speko-agent-tools.js";
 import { githubBotConnectionIdsForRun } from "../chat-github-tools.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
@@ -232,8 +233,11 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
     && (["mcp_remote", "local_stdio"].includes(connection.transport) || isBrowserUseConnection(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id))
   ).map((connection) => connection.id));
   const assignment = {
-    version: 1,
+    version: 2,
     agentId: input.agent.id,
+    pluginTools: await resolveRuntimePluginToolNames({
+      db: input.db, companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId,
+    }),
     connections: [...availableConnectionIds].sort(),
     tools: effective.allowedTools
       .filter((tool) => availableConnectionIds.has(tool.connectionId))
@@ -241,7 +245,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
       .sort(),
   };
   const assignmentDigest = sha256(JSON.stringify(assignment));
-  return { assignmentSetId: `sha256:${assignmentDigest}`, digest: assignmentDigest, bindingId: assignment.connections.length ? `native-mcp:${input.runId}` : null };
+  return { assignmentSetId: `sha256:${assignmentDigest}`, digest: assignmentDigest, bindingId: assignment.connections.length || assignment.pluginTools.length ? `native-mcp:${input.runId}` : null };
 }
 
 export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeAgent; runId: string; runtimeConfig: Record<string, unknown>; runtimeSkillEntries: PaperclipSkillEntry[]; instructionWorkingCopy?: { rootPath: string; entryPath: string; kind?: "agent_files" } }): Promise<NativeRuntimeContextSnapshot> {
