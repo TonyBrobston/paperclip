@@ -1,6 +1,7 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { Command, Option } from "commander";
+import { isPluginInstallPathSyntax } from "@paperclipai/shared";
 import {
   scaffoldPluginProject,
   shellQuote,
@@ -120,14 +121,10 @@ function expandHomePath(packageArg: string): string {
 }
 
 function hasLocalPathSyntax(packageArg: string): boolean {
-  return (
-    path.isAbsolute(packageArg) ||
-    packageArg.startsWith("./") ||
-    packageArg.startsWith("../") ||
-    packageArg.startsWith("~") ||
-    packageArg.startsWith(".\\") ||
-    packageArg.startsWith("..\\")
-  );
+  // Shared with the Plugin Manager install dialog so the same string takes the
+  // same branch from the terminal and from the settings page. `path.isAbsolute`
+  // stays on top of it for the host-specific forms the browser cannot judge.
+  return path.isAbsolute(packageArg) || isPluginInstallPathSyntax(packageArg);
 }
 
 function isExistingRelativePath(

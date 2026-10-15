@@ -44,6 +44,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   PLUGIN_STATUSES,
+  isPluginInstallPathSyntax,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
@@ -1163,6 +1164,18 @@ export function pluginRoutes(
     const trimmedPackage = packageName.trim();
     if (trimmedPackage.length === 0) {
       res.status(400).json({ error: "packageName cannot be empty" });
+      return;
+    }
+
+    // A path-shaped source without the flag would be handed to `npm install`,
+    // which fails on the package.json it cannot find and names npm rather than
+    // the missing flag. No npm package name can take these forms, so the
+    // caller meant a directory.
+    if (!isLocalPath && isPluginInstallPathSyntax(trimmedPackage)) {
+      res.status(400).json({
+        error:
+          "packageName looks like a filesystem path; set isLocalPath: true to install from a directory on this machine",
+      });
       return;
     }
 

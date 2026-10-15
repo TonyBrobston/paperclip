@@ -2879,3 +2879,5 @@ export * from "./validators/task-workspace.js";
 export { prepareWorkspaceRepositorySchema, type PrepareWorkspaceRepository } from "./validators/workspace-repository.js";
 
 export * from "./fast-response.js";
+
+export { isPluginInstallPathSyntax } from "./plugin-install-source.js";

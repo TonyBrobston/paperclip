@@ -107,6 +107,8 @@ Read that first line. If the API URL, version, or mode is not the instance you e
 
 Relative paths are resolved against the current working directory, so `paperclipai plugin install .` from inside the plugin folder works too.
 
+**Settings → Plugins → Install Plugin** accepts the same two kinds of source. Paste an absolute path and it installs from that directory; type a package name and it installs from npm. It classifies the string the same way the CLI does, so a source that works in one works in the other. The path is read on the server, so on a containerized deployment give the path as the *container* sees it — not the host path you cloned to. Prefer an absolute path: unlike the CLI there is no client working directory to resolve against, so a relative one is resolved against the server process's own directory.
+
 ### 5. Inspect
 
 ```bash
