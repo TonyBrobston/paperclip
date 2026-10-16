@@ -15,7 +15,7 @@ even when its pull request is open and green.
 | `PAPERCLIP_ALLOW_LOCAL_API_CALLS`: send agent-facing requests to the container's own listener, so agent runtimes behind an authenticating edge can still reach the API, the MCP gateways, and the GitHub credential broker | `feat/allow-local-runtime-api-calls`, merged by [#1](https://github.com/TonyBrobston/paperclip/pull/1) | not submitted |
 | Launch the installed web app in standalone display mode, so the Android PWA installs as an app instead of a shortcut. Also retargets `ui/src/lib/pwa-install-mode.test.ts`, whose upstream copy pins the old value | `fix/android-pwa-master`, merged by [#3](https://github.com/TonyBrobston/paperclip/pull/3) | open upstream as [#13756](https://github.com/paperclipai/paperclip/pull/13756) and [#13461](https://github.com/paperclipai/paperclip/pull/13461); drop this row once either lands |
 | CI that can pass under this owner, as three `if:` conditions and one `continue-on-error`: `docker.yml` and `agent-runtime-images.yml` skip off the canonical repository, because a fork cannot publish their images and nothing here pulls them, and `commitperclip-review.yml` skips the bot gates that need an upstream-only secret and stops a missing dependency graph from failing the run | `fix/fork-ci-green`, merged by [#10](https://github.com/TonyBrobston/paperclip/pull/10) | not submitted |
-| Unwrap the plugin dispatcher envelope before converting a gateway tool result to the MCP wire shape, and omit `structuredContent` rather than sending `null`. Without it every plugin tool call reaches an agent as `structuredContent: expected record, received null` and the client discards the whole reply — the data and the error text with it. Adds `server/src/services/gateway-mcp-result.ts`, `server/src/__tests__/tool-gateway-mcp-result.test.ts` and `doc/plugins/native-mcp-results.md` | `fix/native-mcp-plugin-results`, merged by [#16](https://github.com/TonyBrobston/paperclip/pull/16) | not submitted; declined for upstream on 2026-10-16 |
+| Unwrap the plugin dispatcher envelope before converting a gateway tool result to the MCP wire shape, and omit `structuredContent` rather than sending `null`. Without it every plugin tool call reaches an agent as `structuredContent: expected record, received null` and the client discards the whole reply — the data and the error text with it. Adds `server/src/services/gateway-mcp-result.ts`, `server/src/__tests__/tool-gateway-mcp-result.test.ts` and `doc/plugins/native-mcp-results.md`, and changes `server/src/routes/tool-gateway.ts`, which is where a refresh conflicts | `fix/native-mcp-plugin-results`, merged by [#16](https://github.com/TonyBrobston/paperclip/pull/16) | not submitted; declined for upstream on 2026-10-16 |
 
 Add a row when a change lands on `master`, and drop one once upstream ships the
 same behavior and a merge brings it in.
@@ -125,9 +125,17 @@ canonical repository.
 
 ### Why the plugin result conversion is a fork-local change
 
-This is the only row that diverges inside `server/`, so it is the one most
-likely to conflict on a refresh. It is carried because the bug it fixes makes
-every local plugin useless to every agent, and no plugin can fix it from its own
+This row and the `PAPERCLIP_ALLOW_LOCAL_API_CALLS` row
+([#1](https://github.com/TonyBrobston/paperclip/pull/1)) are the fork's only
+divergences inside `server/`, and this is the only one of the two that adds
+files there. Do not read this section as saying `server/src/routes/tool-gateway.ts`
+is the only place a refresh can conflict under `server/`:
+[#1](https://github.com/TonyBrobston/paperclip/pull/1) modifies
+`server/src/index.ts`, `server/src/runtime-api.ts`,
+`server/src/services/heartbeat.ts` and two tests beside them, and it is the one
+change intended to live here permanently, so its hunks need at least as much
+care as this row's. This row is carried because the bug it fixes makes every
+local plugin useless to every agent, and no plugin can fix it from its own
 side.
 
 The native gateway built the MCP reply as `structuredContent: resultRecord?.data
