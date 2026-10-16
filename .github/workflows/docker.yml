@@ -56,6 +56,22 @@ jobs:
   # digest; `merge` assembles the manifest list. Both architectures remain
   # available to self-hosted installations and downstream image composers.
   build-and-push:
+    # Images are published for the canonical organisation only. A fork has no
+    # consumer for them — the self-hosted deployment builds the `paperclip`
+    # service from source — and it cannot publish them anyway: the
+    # `github.repository` slug interpolated below carries the owner's display
+    # casing, so under a mixed-case owner buildx rejects every reference with
+    # "repository name (Owner/paperclip) must be lowercase" and kills the
+    # build before the first layer, failing this workflow on every master push
+    # and mailing the fork owner. Lowercasing the slug is the right fix, but it
+    # belongs upstream where the images are actually wanted; here it would
+    # only turn on publishing nobody pulls. Skip instead, the way
+    # agent-runtime-images.yml, cloud-readiness.yml and release.yml already
+    # skip off the canonical repository.
+    #
+    # `merge-and-push` and `promote_canary_channel` reach this through
+    # `needs:` and skip with it.
+    if: github.repository == 'paperclipai/paperclip'
     strategy:
       # Independent legs: one architecture failing should still publish
       # nothing, but it must not also hide the other's logs behind a
