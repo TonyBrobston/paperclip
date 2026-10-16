@@ -10,7 +10,7 @@ The new service uses its own repository token, name, container credentials, and 
 
 The server repository and runner work directory are mounted at their exact absolute host paths inside the runner. Actions checks out into that persistent work directory. BuildKit receives the fresh checkout as its build context. The script verifies the runner mounts through Docker inspect before building. A translated path such as `/home/runner/_work` is rejected.
 
-The script sets HOME to the deployment user's host home only for the deployment process, so existing `~/...` plugin mounts resolve to host paths. The runner itself keeps `/home/runner` as HOME. Compose reads the existing host `docker-compose.yml`, `.env`, and `paperclip.env` through the read-only repository mount. The project name comes from the running Paperclip container's Compose label, and its project directory must match. `COMPOSE_PROJECT_NAME`, if provided as a repository variable, must match that label.
+The script sets HOME to the deployment user's host home only for the deployment process, so existing `~/...` plugin mounts resolve to host paths. Before changing HOME, the script preserves an explicit `DOCKER_CONFIG` or defaults it to `$RUNNER_TEMP/.docker` (the runner home’s `.docker` directory outside Actions). It requires an absolute path, creates the directory, and verifies it is writable and searchable before invoking Docker. Docker and Buildx can therefore write client state without requiring write access to the host home. The runner itself keeps `/home/runner` as HOME. Compose reads the existing host `docker-compose.yml`, `.env`, and `paperclip.env` through the read-only repository mount. The project name comes from the running Paperclip container's Compose label, and its project directory must match. `COMPOSE_PROJECT_NAME`, if provided as a repository variable, must match that label.
 
 No Paperclip service settings are replaced. Keep all existing environment variables, plugin and capacity mounts, `/srv/paperclip/data`, backup mounts, and the `/api/health` health check. If production uses additional Compose override files or a different project directory, adapt and review the script's Compose invocation before enabling the runner. Never print resolved Compose JSON; it contains secrets.
 
@@ -42,6 +42,8 @@ Once stopped and deregistered, rename the directory to `~/actions-runner-papercl
 A preflight or build failure exits before recreation. A health failure makes the job fail and leaves the last successful revision marker unchanged. The old image is tagged `tbro/paperclip:previous` before building. No automatic database rollback occurs. Startup migrations can make an old image incompatible with new data; restore the matching backup when necessary.
 
 For recovery, disable the workflow and stop only the new runner to prevent another queued deployment. After inspecting the failure and backup compatibility, tag the known-good image as `tbro/paperclip:local` and run the existing project command with `up -d --no-build --pull never --no-deps --force-recreate --wait --wait-timeout 300 paperclip`. Do not use `down` or recreate other services. Keep backup retention independent of runner work cleanup.
+
+If a build fails with `mkdir /home/tony/.docker: permission denied`, use the deployment script revision that creates a writable runner Docker configuration directory before invoking Docker. Do not mount the entire host home or loosen its permissions. An explicit `DOCKER_CONFIG`, if configured, must be writable inside the runner.
 
 ## Verification
 
