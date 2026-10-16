@@ -11,10 +11,11 @@ even when its pull request is open and green.
 
 | Change | Came from | Upstream |
 | --- | --- | --- |
-| Use the fork’s `pr-trusted.yml@master` for pull request CI, so the workflow and source tree come from the same repository. Upstream’s moving recipe can require files absent from this older tree. Known residual: `pr-trusted.yml` still calls upstream’s `ci-routing.yml@master`; changing that reference is outside this fix | `fix/fork-pr-workflow` | fork-specific |
+| Use the fork’s `pr-trusted.yml@master` for pull request CI, so the workflow and source tree come from the same repository. Upstream’s moving recipe can require files absent from this older tree. Known residual: `pr-trusted.yml` still calls upstream’s `ci-routing.yml@master`; changing that reference is outside this fix | `fix/fork-pr-workflow`, merged by [#17](https://github.com/TonyBrobston/paperclip/pull/17) | fork-specific |
 | `PAPERCLIP_ALLOW_LOCAL_API_CALLS`: send agent-facing requests to the container's own listener, so agent runtimes behind an authenticating edge can still reach the API, the MCP gateways, and the GitHub credential broker | `feat/allow-local-runtime-api-calls`, merged by [#1](https://github.com/TonyBrobston/paperclip/pull/1) | not submitted |
 | Launch the installed web app in standalone display mode, so the Android PWA installs as an app instead of a shortcut. Also retargets `ui/src/lib/pwa-install-mode.test.ts`, whose upstream copy pins the old value | `fix/android-pwa-master`, merged by [#3](https://github.com/TonyBrobston/paperclip/pull/3) | open upstream as [#13756](https://github.com/paperclipai/paperclip/pull/13756) and [#13461](https://github.com/paperclipai/paperclip/pull/13461); drop this row once either lands |
 | CI that can pass under this owner, as three `if:` conditions and one `continue-on-error`: `docker.yml` and `agent-runtime-images.yml` skip off the canonical repository, because a fork cannot publish their images and nothing here pulls them, and `commitperclip-review.yml` skips the bot gates that need an upstream-only secret and stops a missing dependency graph from failing the run | `fix/fork-ci-green`, merged by [#10](https://github.com/TonyBrobston/paperclip/pull/10) | not submitted |
+| Unwrap the plugin dispatcher envelope before converting a gateway tool result to the MCP wire shape, and omit `structuredContent` rather than sending `null`. Without it every plugin tool call reaches an agent as `structuredContent: expected record, received null` and the client discards the whole reply — the data and the error text with it. Adds `server/src/services/gateway-mcp-result.ts`, `server/src/__tests__/tool-gateway-mcp-result.test.ts` and `doc/plugins/native-mcp-results.md` | `fix/native-mcp-plugin-results`, merged by [#16](https://github.com/TonyBrobston/paperclip/pull/16) | not submitted; declined for upstream on 2026-10-16 |
 
 Add a row when a change lands on `master`, and drop one once upstream ships the
 same behavior and a merge brings it in.
@@ -121,6 +122,44 @@ fired. Its `REGISTRY` names the canonical organisation, which a fork's
 last two hundred touched those paths, so the fork would have gone red on some
 later refresh rather than on this one. Its single job now skips off the
 canonical repository.
+
+### Why the plugin result conversion is a fork-local change
+
+This is the only row that diverges inside `server/`, so it is the one most
+likely to conflict on a refresh. It is carried because the bug it fixes makes
+every local plugin useless to every agent, and no plugin can fix it from its own
+side.
+
+The native gateway built the MCP reply as `structuredContent: resultRecord?.data
+?? null`. For a remote MCP or builtin tool `result.result` is `{ content, data }`
+and `.data` resolves. For a **plugin** tool the dispatcher returns a
+`ToolExecutionResult` — `{ pluginId, toolName, result }` — so `.data` is one
+level too shallow, reads `undefined`, and `?? null` fires. MCP requires
+`structuredContent` to be an object when the field is present, so the client
+rejects the whole reply, including the `content` text that did carry the answer.
+
+That is why it cannot be fixed in a plugin. Both local plugins shipped their own
+guarantee that `data` is set on every path, success and error, and both still
+failed with one byte-identical message afterwards; a gallery tool on the same
+gateway worked. The failure is in the conversion, past the point any plugin
+code runs. It also swallowed every diagnostic: a missing store hash, a stale
+token, a missing OAuth scope and a worker that would not start all arrived as
+the same `expected record, received null`, which is why the BigCommerce cause
+took four tasks to find — it was never visible.
+
+Upstream still has the line, at `server/src/routes/tool-gateway.ts`, and
+`gateway-mcp-result.ts` has no upstream counterpart. So a refresh conflicts here
+whenever upstream edits that handler, and the new files cannot be resolved away
+the way a hunk inside a shared file can. An upstream submission was declined on
+2026-10-16; if that is ever revisited, this row drops the moment upstream ships
+equivalent behavior.
+
+One related path is deliberately **not** changed. The context-method branch
+higher in the same handler sets `structuredContent: result` directly, which has
+the same class of defect for a non-object result. It is byte-identical to
+upstream, it is a different method from the tool-call path this row fixes, and
+nothing observed here has failed on it. Fixing it would widen the fork's
+`server/` divergence on an untested path, so it is left for an upstream report.
 
 ## What the fork does not carry
 
