@@ -9,6 +9,8 @@ compose_dir="$(realpath "${PAPERCLIP_COMPOSE_DIR:?Runner must provide PAPERCLIP_
 work_dir="$(realpath "${PAPERCLIP_RUNNER_WORK:?Runner must provide PAPERCLIP_RUNNER_WORK}")"
 [[ "$source_dir" == "$work_dir/"* ]] || fail 'Checkout must be inside the host-visible runner work directory.'
 [[ -z "${DOCKER_HOST:-}" && -z "${DOCKER_CONTEXT:-}" ]] || fail 'Use the local host Docker socket.'
+# Keep Docker/Buildx client state in the runner home when Compose uses host HOME.
+export DOCKER_CONFIG="${DOCKER_CONFIG:-$HOME/.docker}"
 export HOME="$host_home"
 state_dir="${PAPERCLIP_DEPLOY_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/paperclip-deploy}"
 mkdir -p "$state_dir"

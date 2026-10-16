@@ -10,6 +10,12 @@ SCRIPT = Path(__file__).with_name("deploy-home-server.sh").resolve()
 DOCKER = """#!/usr/bin/env python3
 import json, os, sys
 a = sys.argv[1:]
+if os.environ.get("CHECK_DOCKER_CONFIG"):
+    from pathlib import Path
+    assert os.environ["HOME"] == os.environ["PAPERCLIP_HOST_HOME"]
+    config = Path(os.environ.get("DOCKER_CONFIG", os.environ["HOME"] + "/.docker"))
+    config.mkdir(parents=True, exist_ok=True)
+    (config / "buildx-write-probe").write_text("ok")
 with open(os.environ["DOCKER_LOG"], "a") as f:
     f.write(json.dumps(a) + "\\n")
 if a[0] == "compose":
@@ -77,7 +83,7 @@ class DeploymentTests(unittest.TestCase):
                         PAPERCLIP_DEPLOY_STATE_DIR=str(self.state), DOCKER_LOG=str(self.log),
                         COMPOSE_PROJECT_NAME="")
         self.env.pop("BASH_ENV", None)
-        for key in ("BAD_CONTEXT", "NO_HEALTH", "NO_CONTAINER", "BUILD_FAIL", "HEALTH_FAIL", "BAD_MOUNT", "BAD_PROJECT_DIR", "DOCKER_HOST", "DOCKER_CONTEXT"):
+        for key in ("BAD_CONTEXT", "NO_HEALTH", "NO_CONTAINER", "BUILD_FAIL", "HEALTH_FAIL", "BAD_MOUNT", "BAD_PROJECT_DIR", "DOCKER_HOST", "DOCKER_CONTEXT", "CHECK_DOCKER_CONFIG"):
             self.env.pop(key, None)
 
     def git(self, *args):
@@ -103,6 +109,21 @@ class DeploymentTests(unittest.TestCase):
             self.assertIn(option, calls[up])
         self.assertIn(["image", "tag", "sha256:old-image", "tbro/paperclip:previous"], calls)
         self.assertEqual((self.state / "last-deployed").read_text().strip(), self.git("rev-parse", "HEAD"))
+
+    def test_docker_state_uses_runner_home_while_compose_uses_host_home(self):
+        runner_home = self.root / "runner-home"
+        runner_home.mkdir()
+        (self.root / ".docker").write_text("host home cannot hold Docker state")
+        self.env.pop("DOCKER_CONFIG", None)
+        result = self.deploy(HOME=str(runner_home), CHECK_DOCKER_CONFIG="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((runner_home / ".docker/buildx-write-probe").exists())
+
+    def test_explicit_docker_config_is_preserved(self):
+        config = self.root / "custom-docker"
+        result = self.deploy(DOCKER_CONFIG=str(config), CHECK_DOCKER_CONFIG="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((config / "buildx-write-probe").exists())
 
     def test_build_failure_never_recreates_container(self):
         self.assertNotEqual(self.deploy(BUILD_FAIL="1").returncode, 0)
