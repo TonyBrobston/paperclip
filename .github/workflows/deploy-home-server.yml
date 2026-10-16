@@ -1,0 +1,31 @@
+name: Deploy Paperclip to the home server
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paperclip-home-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'TonyBrobston/paperclip' && github.ref == 'refs/heads/master'
+    runs-on: [self-hosted, linux, paperclip-deploy]
+    timeout-minutes: 90
+    steps:
+      - name: Pull the latest master
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: master
+          persist-credentials: false
+          clean: true
+      - name: Build and deploy Paperclip
+        env:
+          PAPERCLIP_COMPOSE_DIR: ${{ vars.PAPERCLIP_COMPOSE_DIR }}
+          COMPOSE_PROJECT_NAME: ${{ vars.PAPERCLIP_COMPOSE_PROJECT_NAME }}
+        run: bash scripts/deploy-home-server.sh
