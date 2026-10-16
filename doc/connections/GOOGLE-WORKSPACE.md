@@ -22,19 +22,15 @@ Google's hosted Workspace MCP servers are Developer Preview services. The app
 cards remain independent even when several services use the same customer-owned
 Google OAuth client or the same Paperclip Cloud broker deployment.
 
-## Temporary Connections page visibility hold
+## Connections page visibility
 
-While Google OAuth verification is pending, the Connections landing page
-(`ui/src/pages/apps/Browse.tsx`) hides all nine Google Workspace entries,
-including their saved accounts. This is a display-only filter. App definitions,
-direct setup and management routes, OAuth profiles, saved credentials, and
-runtime tools remain unchanged. This is not an access-control restriction.
+This fork shows all nine Google Workspace entries and their saved accounts on
+the Connections landing page. Existing active, draft, and disabled accounts
+remain available for management, including accounts identified by legacy
+connection source metadata. New connections use each app's existing setup flow.
 
-Keep verification instances pinned to their pre-hold app release so reviewers
-can still find and test the integrations. After approval, remove the page's
-`GOOGLE_CONNECTOR_SLUGS` filter and update its visibility tests before upgrading
-those instances. Do not disable the shared definitions or broker profiles to
-control this page's visibility.
+Catalog visibility does not grant Google access. The existing OAuth enrollment,
+profile availability, consent, and tool access rules still apply.
 
 ## Developer Preview enrollment
 
