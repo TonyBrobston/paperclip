@@ -15,10 +15,56 @@ even when its pull request is open and green.
 | `PAPERCLIP_ALLOW_LOCAL_API_CALLS`: send agent-facing requests to the container's own listener, so agent runtimes behind an authenticating edge can still reach the API, the MCP gateways, and the GitHub credential broker | `feat/allow-local-runtime-api-calls`, merged by [#1](https://github.com/TonyBrobston/paperclip/pull/1) | not submitted |
 | Launch the installed web app in standalone display mode, so the Android PWA installs as an app instead of a shortcut. Also retargets `ui/src/lib/pwa-install-mode.test.ts`, whose upstream copy pins the old value | `fix/android-pwa-master`, merged by [#3](https://github.com/TonyBrobston/paperclip/pull/3) | open upstream as [#13756](https://github.com/paperclipai/paperclip/pull/13756) and [#13461](https://github.com/paperclipai/paperclip/pull/13461); drop this row once either lands |
 | CI that can pass under this owner, as three `if:` conditions and one `continue-on-error`: `docker.yml` and `agent-runtime-images.yml` skip off the canonical repository, because a fork cannot publish their images and nothing here pulls them, and `commitperclip-review.yml` skips the bot gates that need an upstream-only secret and stops a missing dependency graph from failing the run | `fix/fork-ci-green`, merged by [#10](https://github.com/TonyBrobston/paperclip/pull/10) | not submitted |
+| Deliver authorized local plugin tools to agent runtimes, and resolve discovery and dispatch from one policy decision so a snapshot cannot grant what dispatch would refuse. Without it no `tbro_*` plugin tool appears in an agent's catalogue at all, so a plugin can be installed, enabled and healthy and still be unreachable. Adds `server/src/services/plugin-runtime-tools.ts` and `server/src/services/tool-risk.ts` and changes seven more files under `server/`; a refresh conflicts in `server/src/services/native-runtime/runtime-context.ts` (assignment snapshot `version: 1` → `2`, plus a `pluginTools` key), `server/src/services/tool-access-policy.ts`, `server/src/services/plugin-tool-dispatcher.ts` and `server/src/services/tool-gateway.ts`. `tool-risk.ts` is upstream's private `inferToolRisk` lifted out of `tool-gateway.ts`, so an upstream edit to that function arrives in the file this fork deleted it from and has to be ported across by hand | `fix/plugin-runtime-tool-delivery`, merged by [#15](https://github.com/TonyBrobston/paperclip/pull/15) | not submitted |
 | Unwrap the plugin dispatcher envelope before converting a gateway tool result to the MCP wire shape, and omit `structuredContent` rather than sending `null`. Without it every plugin tool call reaches an agent as `structuredContent: expected record, received null` and the client discards the whole reply — the data and the error text with it. Adds `server/src/services/gateway-mcp-result.ts`, `server/src/__tests__/tool-gateway-mcp-result.test.ts` and `doc/plugins/native-mcp-results.md`, and changes `server/src/routes/tool-gateway.ts`, which is where a refresh conflicts | `fix/native-mcp-plugin-results`, merged by [#16](https://github.com/TonyBrobston/paperclip/pull/16) | not submitted; declined for upstream on 2026-10-16 |
 
 Add a row when a change lands on `master`, and drop one once upstream ships the
 same behavior and a merge brings it in.
+
+### Ask git which files diverge, never this table
+
+The table says *why* each change is carried. It is not a reliable inventory of
+*what* a merge can damage, and it should never be used as one. Two changes
+reached `master` carrying no row at all —
+[#15](https://github.com/TonyBrobston/paperclip/pull/15) and
+[#16](https://github.com/TonyBrobston/paperclip/pull/16), both given one only
+on 2026-10-16 — and two successive attempts to describe the `server/`
+divergence from the rows alone were wrong in the same direction: the rows were
+fewer than the reality. Before resolving a conflict, compute the answer:
+
+```sh
+git fetch upstream
+git diff --stat "$(git merge-base origin/master upstream/master)" origin/master -- server/
+```
+
+The merge base is the newest upstream commit the fork has already merged, so
+that diff is exactly what the fork adds on top of upstream. Swap the pathspec
+for `ui/`, `.github/`, `packages/` or drop it for everything.
+
+Snapshot, 2026-10-16, `master` at `a4cdd6de5`: **20 files under `server/`**, from
+four pull requests.
+
+- [#1](https://github.com/TonyBrobston/paperclip/pull/1) — eight files, **every
+  one of them a modification of a file upstream also has**: `server/src/index.ts`,
+  `server/src/runtime-api.ts`, `server/src/services/heartbeat.ts`,
+  `heartbeat/run-preparation.ts`, `heartbeat/runtime-execution.ts`,
+  `adapters/process/execute.ts` and two tests. It adds no file under `server/`,
+  so it is the row a merge can resolve away most quietly — there is no
+  unmatched path to notice afterwards — and it is the one change meant to live
+  here permanently. Its hunks deserve more care than any other row's, not less.
+- [#8](https://github.com/TonyBrobston/paperclip/pull/8) — one added file,
+  `server/src/__tests__/runtime-local-api-routing.test.ts`. It is test cover
+  for #1 rather than a behavior change, which is why it has no row of its own;
+  the section below explains what it guards.
+- [#15](https://github.com/TonyBrobston/paperclip/pull/15) — nine files, two
+  added.
+- [#16](https://github.com/TonyBrobston/paperclip/pull/16) — three files, two
+  added.
+
+Only #1's `heartbeat/run-preparation.ts` is shared with another row (#15), which
+is why the per-row counts sum to twenty-one and the diff reports twenty. Treat
+every number here as stale the moment `master` moves; the command is the
+authority.
 
 ### Why the local-API opt-in is scoped to one kind of runtime
 
@@ -125,18 +171,14 @@ canonical repository.
 
 ### Why the plugin result conversion is a fork-local change
 
-This row and the `PAPERCLIP_ALLOW_LOCAL_API_CALLS` row
-([#1](https://github.com/TonyBrobston/paperclip/pull/1)) are the fork's only
-divergences inside `server/`, and this is the only one of the two that adds
-files there. Do not read this section as saying `server/src/routes/tool-gateway.ts`
-is the only place a refresh can conflict under `server/`:
-[#1](https://github.com/TonyBrobston/paperclip/pull/1) modifies
-`server/src/index.ts`, `server/src/runtime-api.ts`,
-`server/src/services/heartbeat.ts` and two tests beside them, and it is the one
-change intended to live here permanently, so its hunks need at least as much
-care as this row's. This row is carried because the bug it fixes makes every
-local plugin useless to every agent, and no plugin can fix it from its own
-side.
+This row is one of several fork-local divergences inside `server/`, and it is
+not the largest. Do not read this section — or any prose in this file — as an
+inventory of where a refresh can conflict under `server/`; run the command in
+"Ask git which files diverge" instead. What is specific to this row is narrow:
+the conflict lands in `server/src/routes/tool-gateway.ts`, and
+`server/src/services/gateway-mcp-result.ts` and its test have no upstream
+counterpart. The row is carried because the bug it fixes makes every local
+plugin useless to every agent, and no plugin can fix it from its own side.
 
 The native gateway built the MCP reply as `structuredContent: resultRecord?.data
 ?? null`. For a remote MCP or builtin tool `result.result` is `{ content, data }`
@@ -212,6 +254,21 @@ git log --oneline --no-merges upstream/master..master
 
 Every change in the table must still be in that list. If one is missing, the
 merge dropped it; fix the merge before pushing.
+
+That check only catches what the table remembers, so run the file-level one
+too, before and after the merge, and compare. Name the local branch, not
+`origin/master`, because the merge being checked is not pushed yet:
+
+```sh
+git diff --name-only "$(git merge-base master upstream/master)" master -- server/
+```
+
+A path that was in the "before" list and is gone from the "after" list is a
+fork-local change the merge silently resolved away, whether or not any row
+mentions it. The reverse does not hold: a path that survives can still have
+lost hunks, which is the whole risk for a row that adds no file of its own, so
+read the surviving diffs for the rows the merge touched. See "Ask git which
+files diverge, never this table".
 
 ### A refresh is not merged by its own pull request
 
