@@ -32,7 +32,9 @@ Agent access: [companion](../agent-access-map/connection-setup.md).
 
 Open Apps (`/apps`), choose an app, and connect from its landing page. Select an
 available method and access, then complete setup. Existing connections open
-their details; unfinished ones offer a way to finish setup.
+their details; unfinished ones offer a way to finish setup. This fork shows all
+nine Google Workspace apps and their active, draft, and disabled saved accounts.
+Google setup and tool access still require the existing authorization.
 
 ### `mcp-link`
 
@@ -74,7 +76,8 @@ Automated: [Browse](../../ui/src/pages/apps/Browse.test.tsx),
 [unconnected app](../../ui/src/pages/apps/AppNotConnected.test.tsx), and
 [AppsConnect](../../ui/src/pages/apps/AppsConnect.test.tsx) cover catalog entry,
 access selection, provider-specific method choices, and setup failures with
-mocked APIs. [Connection intents](../../tests/e2e/connection-intents.spec.ts)
+mocked APIs. Browse also verifies all nine Google Workspace setup links and
+visibility of saved accounts, including legacy source metadata. [Connection intents](../../tests/e2e/connection-intents.spec.ts)
 drives store and task setup against one fake provider through a useful continuation:
 
 ```sh
