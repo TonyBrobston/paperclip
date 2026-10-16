@@ -193,6 +193,29 @@ export interface PluginToolDispatcher {
 // Factory: createPluginToolDispatcher
 // ---------------------------------------------------------------------------
 
+/** Reconstruct persisted ready declarations using the startup registry.
+ * Execution still uses the live worker dispatcher injected into the HTTP gateway.
+ */
+export async function listReadyPluginTools(db: Db): Promise<AgentToolDescriptor[]> {
+  const registry = createPluginToolRegistry();
+  const ready = await pluginRegistryService(db).listByStatus("ready") as PluginRecord[];
+  for (const plugin of ready) registry.registerPlugin(plugin.pluginKey, plugin.manifestJson, plugin.id);
+  return registry.listTools().map(toAgentDescriptor);
+}
+
+/**
+ * Convert a `RegisteredTool` to an `AgentToolDescriptor`.
+ */
+function toAgentDescriptor(tool: RegisteredTool): AgentToolDescriptor {
+  return {
+    name: tool.namespacedName,
+    displayName: tool.displayName,
+    description: tool.description,
+    parametersSchema: tool.parametersSchema,
+    pluginId: tool.pluginDbId,
+  };
+}
+
 /**
  * Create a new `PluginToolDispatcher`.
  *
@@ -273,19 +296,6 @@ export function createPluginToolDispatcher(
     }
 
     registry.registerPlugin(plugin.pluginKey, manifest, plugin.id);
-  }
-
-  /**
-   * Convert a `RegisteredTool` to an `AgentToolDescriptor`.
-   */
-  function toAgentDescriptor(tool: RegisteredTool): AgentToolDescriptor {
-    return {
-      name: tool.namespacedName,
-      displayName: tool.displayName,
-      description: tool.description,
-      parametersSchema: tool.parametersSchema,
-      pluginId: tool.pluginDbId,
-    };
   }
 
   // -----------------------------------------------------------------------

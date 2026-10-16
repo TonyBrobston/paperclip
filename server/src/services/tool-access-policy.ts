@@ -1357,6 +1357,25 @@ export function toolAccessPolicyService(db: Db) {
       return !matchingEntries.some((entry) => entry.effect === "exclude")
         && (profile.defaultAction === "allow" || matchingEntries.some((entry) => entry.effect === "include"));
     });
+    // A native plugin snapshot bounds delivery without replacing conditional
+    // source grants or keeping revoked access alive. Check both before policies
+    // or explicit grants can bypass the immutable assignment boundary.
+    if (ctx.providerType === "paperclip_plugin" && ctx.gatewayId) {
+      const [gateway] = await cachedRead(cache, `native-plugin-gateway:${ctx.companyId}:${ctx.gatewayId}`, async () =>
+        db.select({ metadata: toolMcpGateways.metadata, defaultProfileMode: toolMcpGateways.defaultProfileMode })
+          .from(toolMcpGateways).where(and(eq(toolMcpGateways.companyId, ctx.companyId), eq(toolMcpGateways.id, ctx.gatewayId!))).limit(1));
+      if (gateway?.defaultProfileMode === "gateway_only" && typeof gateway.metadata?.nativeRuntimeAssignmentDigest === "string") {
+        if (!permittedByProfile) {
+          return decision("deny", "deny_default", "Plugin tool is outside the immutable runtime assignment.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
+        }
+        const original = await decide({
+          ...input,
+          runContext: { ...input.runContext, gatewayId: null },
+          consumeRateLimit: false,
+        }, { cache });
+        if (!original.allowed) return original;
+      }
+    }
     const policies = await cachedRead(cache, `enabled-policies:${ctx.companyId}`, async () =>
       db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt)));
     for (const policy of policies) {

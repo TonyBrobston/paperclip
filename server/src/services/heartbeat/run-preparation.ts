@@ -83,6 +83,7 @@ import {
   secretService,
   type MissingRuntimeBinding,
 } from "../secrets.js";
+import { resolveRuntimePluginToolNames } from "../plugin-runtime-tools.js";
 import { createToolGatewayService } from "../tool-gateway.js";
 import { toolAccessService } from "../tool-access.js";
 import {
@@ -1027,8 +1028,11 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   const assignedTools = effective.allowedTools.filter((tool) =>
     assignedConnectionIds.has(tool.connectionId),
   );
+  const assignedPluginTools = await resolveRuntimePluginToolNames({
+    db: input.db, companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId,
+  });
   const service = createToolGatewayService(input.db);
-  if (assignedConnections.length === 0) {
+  if (assignedConnections.length === 0 && assignedPluginTools.length === 0) {
     await service.recordRuntimeMcpDeliveryDiagnostic({
       companyId: input.agent.companyId,
       agentId: input.agent.id,
@@ -1038,8 +1042,9 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     return [];
   }
   const assignment = {
-    version: 1,
+    version: 2,
     agentId: input.agent.id,
+    pluginTools: assignedPluginTools.sort(),
     connections: assignedConnections.map((connection) => connection.id).sort(),
     tools: assignedTools.map((tool) => tool.id).sort(),
   };
@@ -1078,6 +1083,11 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         .map((entry) => entry.connectionId!),
     );
     const entries = [
+      ...assignedPluginTools.map((toolName) => ({
+        selectorType: "tool_name" as const,
+        effect: "include" as const,
+        toolName,
+      })),
       ...assignedConnections
         .filter((connection) => fullConnectionIds.has(connection.id))
         .map((connection) => ({
