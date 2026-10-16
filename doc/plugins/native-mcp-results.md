@@ -14,4 +14,4 @@ The HTTP regression suite validates emitted results with the MCP SDK `CallToolRe
 pnpm exec vitest run server/src/__tests__/tool-gateway-mcp-result.test.ts
 ```
 
-After an operator updates a host with this change, use an authorized native BigCommerce connection to call `get_store_info`, then `list_orders` with `limit: 1` and `page: 1`. Confirm both results pass native client validation, store data is an object, and order array data remains available as JSON text. Do not retain customer order details in validation logs.
+After an operator updates a host with this change, use an authorized native BigCommerce connection to call `get_store_info`, then `list_orders` with `limit: 1` and `page: 1`. Confirm both results pass native client validation, store data and the orders result object (including its orders array and pagination) remain available as structured data and text. Do not retain customer order details in validation logs.
