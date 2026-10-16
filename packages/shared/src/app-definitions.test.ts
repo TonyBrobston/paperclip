@@ -765,7 +765,7 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === "linear")?.methods[0]?.defaults
         ?.scopesHint,
     ).toEqual(["read", "write"]));
-  it("defaults every new connection action to allowed except Enterpret writes and Home Assistant service calls", () => {
+  it("defaults every new connection action to allowed except Enterpret and Home Assistant writes", () => {
     for (const app of APP_DEFINITIONS)
       for (const method of app.methods) {
         if (app.slug === "enterpret") {
@@ -776,11 +776,13 @@ describe("AppDefinition catalog", () => {
           continue;
         }
         // Home Assistant's one write action reaches the whole service
-        // registry, so it ships Ask first while the nine reads stay Allowed.
+        // registry, and two of its reads can return a credential in provider
+        // text, so both levels ship Ask first while the other seven reads stay
+        // Allowed. The per-tool table lives in the connector's own test.
         if (app.slug === "home-assistant") {
           expect(recommendedDefaultsForApp(app, method.key)).toEqual({
             access: "all_agents",
-            askFirstRiskLevels: ["destructive"],
+            askFirstRiskLevels: ["write", "destructive"],
           });
           continue;
         }

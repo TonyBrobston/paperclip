@@ -125,13 +125,46 @@ Write actions: `call_service`, and only that one.
 reloads configuration, or stops the instance, and the risk of the action
 depends on arguments rather than on the tool name.
 
-Because of that, `recommendedDefaultsForApp` ships this connector with
-`askFirstRiskLevels: ["destructive"]`, so a new connection has
-`call_service` on **Ask first** and all nine reads **Allowed**. That is a
-narrow provider policy of the kind the playbook allows, and it follows the
-Enterpret precedent; it does not change the repository-wide default for any
-other connector. An operator can still move it to Allowed or Off on
-**Permissions**.
+### Two reads can return a credential
+
+`check_config` and `get_error_log` are classified **write** rather than `read`,
+even though neither changes anything. Both return free-form provider text that
+can quote a secret:
+
+- `/api/error_log` is the log output of every loaded integration, and an
+  integration that logs a failed request logs its URL. A token in a query
+  string is a routine find in a Home Assistant log — it is why the Home
+  Assistant community asks people to scrub logs before posting them.
+- `/api/config/core/check_config` returns YAML validation errors, and a
+  validation error quotes the offending value. For a key filled from
+  `!secret`, the value is expanded before validation, so the quoted value is
+  the secret itself.
+
+This matters more here than on most connectors, because a long-lived access
+token cannot be scoped to read-only or to specific entities (see [Credential
+boundary](#credential-boundary)). The per-action policy is the only place a
+credential read can be gated, and both tools are diagnostics, so an approval
+costs little. `HOME_ASSISTANT_CREDENTIAL_BEARING_TOOLS` in
+`packages/shared/src/home-assistant.ts` is the list, and `classifyRisk` reads
+it.
+
+Redaction was the alternative. It was not taken: a `!secret` value is arbitrary
+operator text with no pattern to match, so a redaction pass would mostly
+reassure rather than contain.
+
+### Defaults on a new connection
+
+Because of the two rules above, `recommendedDefaultsForApp` ships this
+connector with `askFirstRiskLevels: ["write", "destructive"]`, so a new
+connection has `call_service`, `check_config` and `get_error_log` on **Ask
+first** and the other seven reads **Allowed**. That is a narrow provider policy
+of the kind the playbook allows, and it follows the Enterpret precedent; it does
+not change the repository-wide default for any other connector. An operator can
+still move any action to Allowed or Off on **Permissions**.
+
+`server/src/services/connectors/home-assistant.test.ts` asserts that per-tool
+table against `classifyRisk` and `recommendedDefaultsForApp` together, which is
+how finalization decides it, so neither half can drift back to Allowed alone.
 
 ### No configuration writes, deliberately
 
@@ -169,6 +202,11 @@ Two consequences, both recorded in the method's `warnings` and in
   carrying only the access its agents need; and
 - the per-action policy, not the token, is where write access is narrowed.
 
+The same reasoning covers reading a credential back out of the instance, which
+a token's permissions cannot prevent either: `check_config` and
+`get_error_log` ship **Ask first** for that reason, not because they change
+anything.
+
 Revoking the token in the Home Assistant profile screen is the immediate
 cut-off. Removing the Paperclip connection clears the grant, gateway access,
 and owned secret material in the usual way.
@@ -190,13 +228,21 @@ catalog; a Home Assistant instance cannot expand it.
 `GET /api/states` returns the whole installation, and `GET /api/error_log`
 returns an unpaged plaintext log. Both are bounded:
 
-- a response body over 8 MiB is refused with an actionable message rather than
-  buffered;
+- a response body that has to parse as JSON is refused over 8 MiB, with an
+  actionable message, rather than buffered;
 - `list_entities` filters by domain and substring, caps rows at
   `HOME_ASSISTANT_ENTITY_PAGE_MAX`, and reports `truncated` instead of silently
   dropping rows; and
 - `get_error_log` returns a tail of at most
   `HOME_ASSISTANT_LOG_TAIL_MAX_BYTES` and reports whether it truncated.
+
+The log tail is applied while the body streams, not after it is buffered.
+`/api/error_log` has no paging and no `Range` support, so Home Assistant sends
+the whole current `home-assistant.log`; on a long-running instance with a
+chatty integration that file is larger than 8 MiB. Refusing it would make the
+diagnostic tool fail on exactly the instance someone is trying to diagnose, and
+no argument could recover it, so `readBounded` drops earlier chunks as the
+window moves instead of throwing.
 
 ## Files
 

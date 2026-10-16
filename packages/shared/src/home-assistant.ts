@@ -28,6 +28,29 @@ export const HOME_ASSISTANT_ENTITY_PAGE_MAX = 500;
 /** Home Assistant returns the error log as plaintext with no paging. */
 export const HOME_ASSISTANT_LOG_TAIL_MAX_BYTES = 64 * 1024;
 
+/**
+ * Read actions whose response is free-form provider text that can quote a
+ * credential. They are classified `write` rather than `read` so this
+ * connector's Ask-first default covers them; see `classifyRisk`.
+ *
+ * `/api/error_log` is the log output of every loaded integration, and an
+ * integration that logs a failed request logs its URL — a token in a query
+ * string is a routine find in a Home Assistant log, which is why the Home
+ * Assistant community asks people to scrub logs before posting them.
+ * `/api/config/core/check_config` returns YAML validation errors that quote the
+ * offending value, and a key filled from `!secret` is expanded before
+ * validation, so the quoted value is the secret.
+ *
+ * Neither action changes anything, so neither is destructive. The exposure is
+ * reading a credential back out of the instance, which a long-lived access
+ * token cannot be scoped to prevent, so the per-action policy is the only place
+ * it can be gated.
+ */
+export const HOME_ASSISTANT_CREDENTIAL_BEARING_TOOLS: ReadonlySet<string> = new Set([
+  "home_assistant_get_error_log",
+  "home_assistant_check_config",
+]);
+
 export function homeAssistantApiUrl(baseUrl: string, path: string): URL {
   const trimmed = baseUrl.replace(/\/+$/, "");
   // A base URL carrying credentials, a query or a fragment would silently

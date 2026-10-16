@@ -65,6 +65,7 @@
       },
       "warnings": [
         "A long-lived access token carries the full permissions of the Home Assistant account that created it. Home Assistant cannot narrow it to specific entities or domains.",
+        "home_assistant_get_error_log and home_assistant_check_config return raw provider text. An integration logs the URL of a failed request, and a YAML validation error quotes the offending value with any !secret already expanded, so either can contain a token or password. Both ship Ask first; review the action policy before setting either to Allowed.",
         "Calling a service acts on real devices. Review the action policy for home_assistant_call_service before leaving it Allowed.",
         "This connector does not write automations.yaml. Authoring automations through the API rewrites that file in place, which conflicts with a Git-managed configuration."
       ],

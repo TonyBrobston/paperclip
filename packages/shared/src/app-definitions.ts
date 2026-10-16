@@ -299,12 +299,19 @@ export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string
   }
   // Home Assistant's single write action reaches the whole service registry, so
   // it can unlock a lock or reload configuration depending only on its
-  // arguments. Ship it Ask first rather than Allowed. The nine read actions
-  // stay Allowed, which is the lookup work this connector exists for.
+  // arguments. Ship it Ask first rather than Allowed.
+  //
+  // Ask first also covers `write`, which here means only the two reads that can
+  // return a credential in provider text (see
+  // HOME_ASSISTANT_CREDENTIAL_BEARING_TOOLS). A long-lived access token cannot
+  // be scoped to read-only or to specific entities, so the per-action policy is
+  // the only place a credential read can be gated, and it is worth an approval
+  // on two diagnostics. The other seven reads stay Allowed, which is the lookup
+  // work this connector exists for.
   if (app.slug === "home-assistant") {
     return {
       access: "all_agents",
-      askFirstRiskLevels: ["destructive"],
+      askFirstRiskLevels: ["write", "destructive"],
     };
   }
   return {

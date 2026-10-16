@@ -67,7 +67,9 @@ async function call(
   path: string,
   options: RequestOptions,
   body?: unknown,
-): Promise<{ text: string; contentType: string }> {
+  /** Return only the last N bytes, streaming past the response cap. */
+  tailBytes?: number,
+): Promise<{ text: string; contentType: string; truncated: boolean }> {
   let url: URL;
   try {
     url = homeAssistantApiUrl(baseUrl, path);
@@ -126,34 +128,67 @@ async function call(
     );
   }
   const contentType = response.headers.get("content-type") ?? "";
-  const buffer = await readBounded(response);
-  return { text: buffer, contentType };
+  const { text, truncated } = await readBounded(response, tailBytes);
+  return { text, contentType, truncated };
 }
 
-/** Home Assistant streams a whole-installation state dump; cap it. */
-async function readBounded(response: Response): Promise<string> {
+/**
+ * Read a bounded response body.
+ *
+ * Home Assistant streams a whole-installation state dump on `/api/states`, so
+ * a response that has to arrive whole to be parsed is capped and refused past
+ * `RESPONSE_LIMIT_BYTES`.
+ *
+ * A log tail is different. `/api/error_log` serves the entire current
+ * `home-assistant.log` with no paging and no `Range` support, so on a
+ * long-running instance with a chatty integration the whole file exceeds that
+ * cap — and refusing would make the diagnostic tool fail every time until
+ * someone truncated the log on the host. When `tailBytes` is set, earlier
+ * chunks are dropped as the window moves instead, so the caller gets the tail
+ * it asked for and memory stays bounded by `tailBytes` plus one chunk.
+ */
+async function readBounded(
+  response: Response,
+  tailBytes?: number,
+): Promise<{ text: string; truncated: boolean }> {
   const reader = response.body?.getReader();
-  if (!reader) return "";
-  const chunks: Uint8Array[] = [];
-  let total = 0;
+  if (!reader) return { text: "", truncated: false };
+  const chunks: Buffer[] = [];
+  let held = 0;
+  let dropped = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
-      total += value.byteLength;
-      if (total > RESPONSE_LIMIT_BYTES) {
-        throw new HomeAssistantError(
-          502,
-          "Home Assistant returned more data than Paperclip will read in one call. Narrow the request with a domain, search or time window.",
-        );
+      chunks.push(Buffer.from(value));
+      held += value.byteLength;
+      if (tailBytes === undefined) {
+        if (held > RESPONSE_LIMIT_BYTES) {
+          throw new HomeAssistantError(
+            502,
+            "Home Assistant returned more data than Paperclip will read in one call. Narrow the request with a domain, search or time window.",
+          );
+        }
+        continue;
       }
-      chunks.push(value);
+      // Drop a leading chunk only while the rest still covers the window.
+      while (chunks.length > 1 && held - chunks[0]!.byteLength >= tailBytes) {
+        held -= chunks.shift()!.byteLength;
+        dropped = true;
+      }
     }
   } finally {
     await reader.cancel().catch(() => {});
   }
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+  const buffer = Buffer.concat(chunks);
+  if (tailBytes === undefined || buffer.byteLength <= tailBytes) {
+    return { text: buffer.toString("utf8"), truncated: dropped };
+  }
+  return {
+    text: buffer.subarray(buffer.byteLength - tailBytes).toString("utf8"),
+    truncated: true,
+  };
 }
 
 function json(payload: { text: string; contentType: string }): unknown {
@@ -278,8 +313,8 @@ export async function executeHomeAssistantTool(
   options: RequestOptions,
 ): Promise<unknown> {
   const baseUrl = homeAssistantBaseUrl(connection);
-  const run = (path: string, body?: unknown) =>
-    call(baseUrl, credentialHeaders, path, options, body);
+  const run = (path: string, body?: unknown, tailBytes?: number) =>
+    call(baseUrl, credentialHeaders, path, options, body, tailBytes);
 
   switch (toolName) {
     case "home_assistant_list_entities": {
@@ -361,12 +396,11 @@ export async function executeHomeAssistantTool(
     case "home_assistant_get_error_log": {
       const input = schemas.home_assistant_get_error_log.parse(parameters ?? {});
       const maxBytes = input.maxBytes ?? HOME_ASSISTANT_LOG_TAIL_MAX_BYTES;
-      const log = await run("/api/error_log");
-      const tail = Buffer.from(log.text, "utf8");
-      return {
-        truncated: tail.byteLength > maxBytes,
-        log: tail.subarray(Math.max(0, tail.byteLength - maxBytes)).toString("utf8"),
-      };
+      // The tail is applied while the body streams. Trimming after the fact
+      // would mean the whole log had to fit under the response cap first, which
+      // on an instance whose log has grown is exactly when this tool is wanted.
+      const log = await run("/api/error_log", undefined, maxBytes);
+      return { truncated: log.truncated, log: log.text };
     }
     case "home_assistant_call_service": {
       const input = schemas.home_assistant_call_service.parse(parameters ?? {});

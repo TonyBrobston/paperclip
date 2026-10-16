@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { HOME_ASSISTANT_TOOLS, homeAssistantApiUrl } from "@paperclipai/shared";
+import {
+  HOME_ASSISTANT_CREDENTIAL_BEARING_TOOLS,
+  HOME_ASSISTANT_TOOLS,
+  getConnectableAppDefinition,
+  homeAssistantApiUrl,
+  recommendedDefaultsForApp,
+} from "@paperclipai/shared";
+import { classifyRisk } from "../tool-access.js";
 import {
   executeHomeAssistantTool,
   homeAssistantBaseUrl,
@@ -158,6 +165,59 @@ describe("Home Assistant tool catalog", () => {
   });
 });
 
+describe("Home Assistant default action policy", () => {
+  // Connection finalization marks a catalog entry Ask first when its
+  // classifyRisk level is in the app's recommended askFirstRiskLevels, so the
+  // two together are what an operator actually gets on a fresh connection.
+  const app = getConnectableAppDefinition("home-assistant")!;
+  const askFirstRiskLevels = new Set(
+    recommendedDefaultsForApp(app, app.methods[0]!.key).askFirstRiskLevels as string[],
+  );
+  const policyFor = (tool: (typeof HOME_ASSISTANT_TOOLS)[number]) =>
+    askFirstRiskLevels.has(classifyRisk(tool, "home-assistant")) ? "Ask first" : "Allowed";
+
+  it("never ships a credential-bearing read as Allowed", () => {
+    // The error log carries integration output, including request URLs with a
+    // token in the query string; check_config quotes the offending YAML value,
+    // and a !secret key is expanded before validation. A long-lived access
+    // token cannot be scoped to read-only, so this policy is the only gate.
+    expect([...HOME_ASSISTANT_CREDENTIAL_BEARING_TOOLS]).toEqual([
+      "home_assistant_get_error_log",
+      "home_assistant_check_config",
+    ]);
+    for (const name of HOME_ASSISTANT_CREDENTIAL_BEARING_TOOLS) {
+      const tool = HOME_ASSISTANT_TOOLS.find((entry) => entry.name === name)!;
+      expect(tool, name).toBeDefined();
+      expect(classifyRisk(tool, "home-assistant"), name).not.toBe("read");
+      expect(policyFor(tool), name).toBe("Ask first");
+    }
+  });
+
+  it("leaves the remaining reads Allowed and gates the service call", () => {
+    expect(
+      Object.fromEntries(HOME_ASSISTANT_TOOLS.map((tool) => [tool.name, policyFor(tool)])),
+    ).toEqual({
+      home_assistant_list_entities: "Allowed",
+      home_assistant_get_state: "Allowed",
+      home_assistant_list_services: "Allowed",
+      home_assistant_render_template: "Allowed",
+      home_assistant_get_config: "Allowed",
+      home_assistant_check_config: "Ask first",
+      home_assistant_get_history: "Allowed",
+      home_assistant_get_logbook: "Allowed",
+      home_assistant_get_error_log: "Ask first",
+      home_assistant_call_service: "Ask first",
+    });
+  });
+
+  it("keeps the service call destructive rather than merely a write", () => {
+    const callService = HOME_ASSISTANT_TOOLS.find(
+      (tool) => tool.name === "home_assistant_call_service",
+    )!;
+    expect(classifyRisk(callService, "home-assistant")).toBe("destructive");
+  });
+});
+
 describe("home_assistant_list_entities", () => {
   const states = [
     state("light.kitchen", "on", "Kitchen"),
@@ -302,6 +362,54 @@ describe("Home Assistant read endpoints", () => {
     ]).result) as { log: string; truncated: boolean };
     expect(value.truncated).toBe(true);
     expect(value.log.length).toBe(1024);
+  });
+
+  it("reads the tail of a log larger than the whole-response cap", async () => {
+    // /api/error_log serves the entire log file with no paging and no Range
+    // support, so on a long-running instance the body is larger than Paperclip
+    // will hold. The tail still has to come back: this is the tool someone
+    // reaches for when an automation is already broken.
+    const megabyte = "a".repeat(1024 * 1024);
+    const streamed = () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            const encoder = new TextEncoder();
+            for (let index = 0; index < 9; index += 1) {
+              controller.enqueue(encoder.encode(megabyte));
+            }
+            controller.enqueue(encoder.encode("last line of the log"));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/plain" } },
+      );
+    const value = (await run("home_assistant_get_error_log", { maxBytes: 2048 }, [streamed])
+      .result) as { log: string; truncated: boolean };
+    expect(value.truncated).toBe(true);
+    expect(Buffer.byteLength(value.log, "utf8")).toBe(2048);
+    expect(value.log.endsWith("last line of the log")).toBe(true);
+  });
+
+  it("still refuses a JSON body larger than the whole-response cap", async () => {
+    // A tail is meaningless for a response that has to parse as JSON, so the
+    // cap stays a refusal on every endpoint that is not the log tail.
+    const streamed = () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            const encoder = new TextEncoder();
+            for (let index = 0; index < 9; index += 1) {
+              controller.enqueue(encoder.encode("b".repeat(1024 * 1024)));
+            }
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    await expect(
+      run("home_assistant_list_entities", {}, [streamed]).result,
+    ).rejects.toThrowError(/more data than Paperclip will read/);
   });
 
   it("filters the service registry by domain without a second request", async () => {

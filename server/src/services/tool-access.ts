@@ -14,6 +14,7 @@ import { mcpDiscoveryHttpFailure, retainMcpConnectionFailure, withMcpConnectionF
 import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import {
   BROWSER_USE_TOOLS,
+  HOME_ASSISTANT_CREDENTIAL_BEARING_TOOLS,
   HOME_ASSISTANT_TOOLS,
   REST_CONNECTOR_SLUGS,
   isRestConnectorConnection,
@@ -2404,7 +2405,13 @@ export function classifyRisk(
     // The reviewed catalog is the authority. A Home Assistant service call can
     // unlock a door or reload configuration, so the one write action is
     // destructive rather than merely a write.
-    return HOME_ASSISTANT_TOOLS.find(t => t.name === tool.name)?.annotations.readOnlyHint ? "read" : "destructive";
+    if (!HOME_ASSISTANT_TOOLS.find(t => t.name === tool.name)?.annotations.readOnlyHint)
+      return "destructive";
+    // Two of the reads return unredacted provider text that can quote a
+    // credential. They change nothing, so destructive would misdescribe them;
+    // write is enough to put them inside this connector's Ask-first default
+    // instead of shipping a credential read as Allowed.
+    return HOME_ASSISTANT_CREDENTIAL_BEARING_TOOLS.has(tool.name) ? "write" : "read";
   }
   if (sourceTemplateKey === "railway") {
     const reviewed = railwayRisk(normalizedToolName);
