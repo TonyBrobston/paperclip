@@ -30,7 +30,20 @@ if a[0] == "compose":
     elif a[0] == "up" and os.environ.get("HEALTH_FAIL"):
         sys.exit(8)
 elif a[0] == "inspect":
-    print("sha256:old-image")
+    if "--format" not in a:
+        mounts = [{"Type": "bind", "Source": os.environ["PAPERCLIP_RUNNER_WORK"], "Destination": os.environ["PAPERCLIP_RUNNER_WORK"]},
+                  {"Type": "bind", "Source": os.environ["PAPERCLIP_COMPOSE_DIR"], "Destination": os.environ["PAPERCLIP_COMPOSE_DIR"]}]
+        if os.environ.get("BAD_MOUNT"):
+            mounts[0]["Source"] = "/different-host-path"
+        print(json.dumps([{"Mounts": mounts}]))
+    elif "working_dir" in a[2]:
+        print("/wrong" if os.environ.get("BAD_PROJECT_DIR") else os.environ["PAPERCLIP_COMPOSE_DIR"])
+    elif "compose.project" in a[2]:
+        print("home-automation")
+    elif "compose.service" in a[2]:
+        print("paperclip")
+    else:
+        print("sha256:old-image")
 """
 
 class DeploymentTests(unittest.TestCase):
@@ -58,11 +71,13 @@ class DeploymentTests(unittest.TestCase):
         self.git("commit", "-m", "initial")
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         PAPERCLIP_SOURCE_DIR=str(self.source),
+                        PAPERCLIP_HOST_HOME=str(self.root), PAPERCLIP_RUNNER_WORK=str(self.root),
+                        HOSTNAME="test-runner",
                         PAPERCLIP_COMPOSE_DIR=str(self.compose),
                         PAPERCLIP_DEPLOY_STATE_DIR=str(self.state), DOCKER_LOG=str(self.log),
                         COMPOSE_PROJECT_NAME="")
         self.env.pop("BASH_ENV", None)
-        for key in ("BAD_CONTEXT", "NO_HEALTH", "NO_CONTAINER", "BUILD_FAIL", "HEALTH_FAIL"):
+        for key in ("BAD_CONTEXT", "NO_HEALTH", "NO_CONTAINER", "BUILD_FAIL", "HEALTH_FAIL", "BAD_MOUNT", "BAD_PROJECT_DIR", "DOCKER_HOST", "DOCKER_CONTEXT"):
             self.env.pop(key, None)
 
     def git(self, *args):
@@ -129,6 +144,32 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.deploy().returncode, 0)
         self.assertEqual(self.deploy().returncode, 0)
         self.assertEqual(sum("up" in a for a in self.calls()), 2)
+
+    def test_mismatched_host_mount_stops_before_build(self):
+        self.assertNotEqual(self.deploy(BAD_MOUNT="1").returncode, 0)
+        self.assertFalse(any("build" in a or "up" in a for a in self.calls()))
+
+    def test_wrong_project_directory_stops_before_build(self):
+        self.assertNotEqual(self.deploy(BAD_PROJECT_DIR="1").returncode, 0)
+        self.assertFalse(any("build" in a or "up" in a for a in self.calls()))
+
+    def test_project_name_is_pinned_to_running_service(self):
+        self.assertEqual(self.deploy().returncode, 0)
+        for call in self.calls():
+            if call[0] == "compose":
+                self.assertEqual(call[call.index("-p") + 1], "home-automation")
+
+    def test_wrong_project_name_stops_before_build(self):
+        self.assertNotEqual(self.deploy(COMPOSE_PROJECT_NAME="other").returncode, 0)
+        self.assertFalse(any("build" in a or "up" in a for a in self.calls()))
+
+    def test_container_only_checkout_stops_before_docker(self):
+        self.assertNotEqual(self.deploy(PAPERCLIP_RUNNER_WORK=str(self.compose)).returncode, 0)
+        self.assertEqual(self.calls(), [])
+
+    def test_remote_docker_is_rejected(self):
+        self.assertNotEqual(self.deploy(DOCKER_HOST="tcp://other:2375").returncode, 0)
+        self.assertEqual(self.calls(), [])
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,13 @@ set -euo pipefail
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 source_dir="$(realpath "${PAPERCLIP_SOURCE_DIR:-${GITHUB_WORKSPACE:-$HOME/paperclip}}")"
-compose_dir="$(realpath "${PAPERCLIP_COMPOSE_DIR:-$HOME/tbro-server/home-automation}")"
+host_home="${PAPERCLIP_HOST_HOME:?Runner must provide PAPERCLIP_HOST_HOME}"
+[[ "$host_home" == /* && "$host_home" != /home/runner ]] || fail 'Expected the deployment user host home.'
+compose_dir="$(realpath "${PAPERCLIP_COMPOSE_DIR:?Runner must provide PAPERCLIP_COMPOSE_DIR}")"
+work_dir="$(realpath "${PAPERCLIP_RUNNER_WORK:?Runner must provide PAPERCLIP_RUNNER_WORK}")"
+[[ "$source_dir" == "$work_dir/"* ]] || fail 'Checkout must be inside the host-visible runner work directory.'
+[[ -z "${DOCKER_HOST:-}" && -z "${DOCKER_CONTEXT:-}" ]] || fail 'Use the local host Docker socket.'
+export HOME="$host_home"
 state_dir="${PAPERCLIP_DEPLOY_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/paperclip-deploy}"
 mkdir -p "$state_dir"
 exec 9>"$state_dir/lock"
@@ -14,7 +20,19 @@ flock -w 60 9 || fail 'Another Paperclip deployment holds the lock.'
 [[ -z "$(git -C "$source_dir" status --porcelain)" ]] || fail 'Source checkout must be clean.'
 revision="$(git -C "$source_dir" rev-parse HEAD)"
 export PAPERCLIP_SOURCE_DIR="$source_dir"
-compose=(docker compose --project-directory "$compose_dir" -f "$compose_dir/docker-compose.yml")
+project="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' paperclip)"
+[[ "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail 'Cannot identify the running Paperclip Compose project.'
+[[ -z "${COMPOSE_PROJECT_NAME:-}" || "$COMPOSE_PROJECT_NAME" == "$project" ]] || fail 'Configured project differs from the running service.'
+compose=(docker compose -p "$project" --project-directory "$compose_dir" -f "$compose_dir/docker-compose.yml")
+export PAPERCLIP_COMPOSE_DIR="$compose_dir" PAPERCLIP_RUNNER_WORK="$work_dir"
+docker inspect "$HOSTNAME" | python3 -c '
+import json, os, sys
+mounts = json.load(sys.stdin)[0]["Mounts"]
+for path in (os.environ["PAPERCLIP_SOURCE_DIR"], os.environ["PAPERCLIP_COMPOSE_DIR"]):
+    if not any(m["Type"] == "bind" and m["Source"] == m["Destination"] and
+               (path == m["Destination"] or path.startswith(m["Destination"].rstrip("/") + "/")) for m in mounts):
+        sys.exit("Deployment paths must be bind-mounted at identical host and container paths.")
+'
 "${compose[@]}" config --format json | python3 -c '
 import json, os, sys
 service = json.load(sys.stdin)["services"]["paperclip"]
@@ -30,6 +48,8 @@ if not service.get("healthcheck") or service["healthcheck"].get("disable"):
 '
 container_id="$("${compose[@]}" ps -q paperclip)"
 [[ -n "$container_id" ]] || fail 'Paperclip must already be running in this Compose project.'
+[[ "$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.service" }}' "$container_id")" == paperclip ]] || fail 'Selected container is not the Paperclip service.'
+[[ "$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "$container_id")" == "$compose_dir" ]] || fail 'Compose directory differs from the running project.'
 old_image="$(docker inspect --format '{{.Image}}' "$container_id")"
 docker image tag "$old_image" tbro/paperclip:previous
 "${compose[@]}" build --pull paperclip

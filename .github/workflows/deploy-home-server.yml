@@ -26,6 +26,5 @@ jobs:
           clean: true
       - name: Build and deploy Paperclip
         env:
-          PAPERCLIP_COMPOSE_DIR: ${{ vars.PAPERCLIP_COMPOSE_DIR }}
           COMPOSE_PROJECT_NAME: ${{ vars.PAPERCLIP_COMPOSE_PROJECT_NAME }}
         run: bash scripts/deploy-home-server.sh
