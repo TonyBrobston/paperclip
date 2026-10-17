@@ -161,7 +161,17 @@ RUN mkdir -p /provider-pack \
     echo "Skipping remote provider pack: supply a full PAPERCLIP_BUILD_COMMIT to enable remote OpenCode/ACPX execution"; \
   fi
 
-FROM base AS production
+FROM base AS browser-runtime
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/paperclip-browser/browsers
+COPY docker/browser/package.json docker/browser/package-lock.json /opt/paperclip-browser/
+RUN npm ci --prefix /opt/paperclip-browser --omit=dev \
+  && /opt/paperclip-browser/node_modules/.bin/playwright install --with-deps chromium \
+  && chmod -R a+rX /opt/paperclip-browser \
+  && rm -rf /var/lib/apt/lists/*
+COPY docker/browser/smoke.cjs /opt/paperclip-browser/smoke.cjs
+RUN gosu node env HOME=/tmp node /opt/paperclip-browser/smoke.cjs
+
+FROM browser-runtime AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
 # Refreshes the tool layer below when it changes (CI stamps an ISO week, so

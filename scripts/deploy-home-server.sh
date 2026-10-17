@@ -58,7 +58,9 @@ container_id="$("${compose[@]}" ps -q paperclip)"
 old_image="$(docker inspect --format '{{.Image}}' "$container_id")"
 docker image tag "$old_image" tbro/paperclip:previous
 "${compose[@]}" build --pull paperclip
+docker run --rm --network none --user node --entrypoint node tbro/paperclip:local /opt/paperclip-browser/smoke.cjs
 "${compose[@]}" up -d --no-build --pull never --no-deps --force-recreate --wait --wait-timeout 300 paperclip
+"${compose[@]}" exec -T paperclip gosu node node /opt/paperclip-browser/smoke.cjs
 printf '%s\n' "$revision" > "$state_dir/last-deployed.tmp"
 mv "$state_dir/last-deployed.tmp" "$state_dir/last-deployed"
 printf 'Paperclip is healthy at source commit %s\n' "$revision"

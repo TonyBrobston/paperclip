@@ -50,3 +50,5 @@ If a build fails with `mkdir /home/tony/.docker: permission denied`, use the dep
 Run `python3 scripts/test_deploy_home_server.py` and `bash -n scripts/deploy-home-server.sh`. In tbro-server run `python3 home-automation/test-paperclip-runner.py` and `bash -n home-automation/github-runner/register-paperclip-and-run.sh`.
 
 Tests use temporary Git repositories and fake Docker/registration commands. They do not deploy or contact a Docker daemon. A real image build, runner registration, Compose validation with production env files, and health verification require the actual server after review. Full application typecheck, Vitest, and build are separate checks.
+
+Browser dependencies and the required image/deployment smoke checks are documented in [browser runtime and recovery](agent-browser-runtime.md).
