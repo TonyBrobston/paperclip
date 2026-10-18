@@ -105,11 +105,13 @@ test.describe.serial("applications lifecycle", () => {
     const notConnectedRow = connectorList
       .getByRole("listitem")
       .filter({ has: page.getByRole("heading", { name: notConnectedName, exact: true }) });
+    await page.getByRole("searchbox", { name: "Search connectors" }).fill(notConnectedName);
     await expect(notConnectedRow).toBeVisible();
     await expect(notConnectedRow).toHaveAttribute("data-connected", "false");
     await expect(notConnectedRow.getByRole("button", { name: `Connect ${notConnectedName}` })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-list.png`, fullPage: true });
 
+    await page.getByRole("searchbox", { name: "Search connectors" }).fill(connectedName);
     await openConnection.click();
     await expect(page).toHaveURL(
       new RegExp(`/${seed.prefix}/apps/${connected.id}/permissions$`),
@@ -117,6 +119,7 @@ test.describe.serial("applications lifecycle", () => {
     );
 
     await gotoApps(page, seed.prefix);
+    await page.getByRole("searchbox", { name: "Search connectors" }).fill(notConnectedName);
     await notConnectedRow.getByRole("button", { name: `Connect ${notConnectedName}` }).click();
     await expect(page).toHaveURL(
       new RegExp(`/${seed.prefix}/apps/app/${notConnected.id}/permissions$`),

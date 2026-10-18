@@ -35,6 +35,10 @@ if a[0] == "compose":
         sys.exit(7)
     elif a[0] == "up" and os.environ.get("HEALTH_FAIL"):
         sys.exit(8)
+    elif a[0] == "exec" and os.environ.get("BROWSER_POST_FAIL"):
+        sys.exit(10)
+elif a[0] == "run" and os.environ.get("BROWSER_PRE_FAIL"):
+    sys.exit(9)
 elif a[0] == "inspect":
     if "--format" not in a:
         mounts = [{"Type": "bind", "Source": os.environ["PAPERCLIP_RUNNER_WORK"], "Destination": os.environ["PAPERCLIP_RUNNER_WORK"]},
@@ -83,7 +87,7 @@ class DeploymentTests(unittest.TestCase):
                         PAPERCLIP_DEPLOY_STATE_DIR=str(self.state), DOCKER_LOG=str(self.log),
                         COMPOSE_PROJECT_NAME="")
         self.env.pop("BASH_ENV", None)
-        for key in ("BAD_CONTEXT", "NO_HEALTH", "NO_CONTAINER", "BUILD_FAIL", "HEALTH_FAIL", "BAD_MOUNT", "BAD_PROJECT_DIR", "DOCKER_HOST", "DOCKER_CONTEXT", "CHECK_DOCKER_CONFIG", "DOCKER_CONFIG", "RUNNER_TEMP"):
+        for key in ("BAD_CONTEXT", "NO_HEALTH", "NO_CONTAINER", "BUILD_FAIL", "HEALTH_FAIL", "BAD_MOUNT", "BAD_PROJECT_DIR", "DOCKER_HOST", "DOCKER_CONTEXT", "CHECK_DOCKER_CONFIG", "DOCKER_CONFIG", "RUNNER_TEMP", "BROWSER_PRE_FAIL", "BROWSER_POST_FAIL"):
             self.env.pop(key, None)
 
     def git(self, *args):
@@ -145,6 +149,29 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("absolute runner path", result.stderr)
         self.assertEqual(self.calls(), [])
+
+    def test_browser_preflight_failure_never_recreates_container(self):
+        self.assertNotEqual(self.deploy(BROWSER_PRE_FAIL="1").returncode, 0)
+        self.assertFalse(any("up" in a for a in self.calls()))
+        self.assertFalse((self.state / "last-deployed").exists())
+
+    def test_browser_postflight_failure_preserves_success_marker(self):
+        self.state.mkdir()
+        marker = self.state / "last-deployed"
+        marker.write_text("previous-success")
+        self.assertNotEqual(self.deploy(BROWSER_POST_FAIL="1").returncode, 0)
+        self.assertEqual(marker.read_text(), "previous-success")
+
+    def test_browser_checks_surround_recreation(self):
+        self.assertEqual(self.deploy().returncode, 0)
+        calls = self.calls()
+        pre = next(i for i, a in enumerate(calls) if a[0] == "run")
+        up = next(i for i, a in enumerate(calls) if "up" in a)
+        post = next(i for i, a in enumerate(calls) if "exec" in a)
+        self.assertLess(pre, up)
+        self.assertLess(up, post)
+        self.assertIn("node", calls[pre])
+        self.assertEqual(calls[post][-4:], ["gosu", "node", "node", "/opt/paperclip-browser/smoke.cjs"])
 
     def test_build_failure_never_recreates_container(self):
         self.assertNotEqual(self.deploy(BUILD_FAIL="1").returncode, 0)

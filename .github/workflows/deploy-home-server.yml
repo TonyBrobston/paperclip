@@ -3,17 +3,38 @@ name: Deploy Paperclip to the home server
 on:
   push:
     branches: [master]
+  pull_request:
+    paths:
+      - Dockerfile
+      - docker/browser/**
+      - scripts/deploy-home-server.sh
+      - scripts/test_deploy_home_server.py
+      - .github/workflows/deploy-home-server.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: paperclip-home-server
+  group: paperclip-home-server-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
   cancel-in-progress: false
 
 jobs:
+  browser-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify deployment failure gates
+        run: python3 scripts/test_deploy_home_server.py
+      - name: Build browser runtime and verify non-root launch
+        run: |
+          docker build --target browser-runtime -t paperclip-browser-check .
+          docker run --rm --network none --user node -e HOME=/tmp --entrypoint node paperclip-browser-check /opt/paperclip-browser/smoke.cjs
   deploy:
+    needs: browser-runtime
     if: github.repository == 'TonyBrobston/paperclip' && github.ref == 'refs/heads/master'
     runs-on: [self-hosted, linux, paperclip-deploy]
     timeout-minutes: 90
