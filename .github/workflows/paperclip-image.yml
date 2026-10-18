@@ -1,0 +1,124 @@
+name: Build and deploy immutable Paperclip images
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    paths:
+      - .github/workflows/paperclip-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paperclip-image-${{ github.event_name == 'pull_request' && github.ref || 'master' }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      - run: pnpm test:run
+      - run: python3 scripts/test_deploy_home_server.py
+
+  image:
+    needs: checks
+    if: github.repository == 'TonyBrobston/paperclip' && github.ref == 'refs/heads/master' && github.event_name != 'pull_request' && vars.PAPERCLIP_IMAGE_PLATFORM != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    env:
+      IMAGE: ghcr.io/tonybrobston/paperclip
+      SOURCE_SHA: ${{ github.sha }}
+      PLATFORM: ${{ vars.PAPERCLIP_IMAGE_PLATFORM }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate confirmed platform
+        run: test "$PLATFORM" = linux/amd64
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check existing SHA image
+        id: existing
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:$SOURCE_SHA" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "epoch=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        if: steps.existing.outputs.exists != 'true'
+        with:
+          context: .
+          target: production
+          platforms: ${{ env.PLATFORM }}
+          load: true
+          tags: ${{ env.IMAGE }}:${{ env.SOURCE_SHA }}
+          labels: org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+          build-args: |
+            USER_UID=1000
+            USER_GID=1000
+            PAPERCLIP_BUILD_COMMIT=${{ env.SOURCE_SHA }}
+            CLI_TOOLS_CACHE_EPOCH=${{ steps.existing.outputs.epoch }}
+          cache-from: type=gha,scope=paperclip-production
+          cache-to: type=gha,mode=max,scope=paperclip-production
+      - name: Verify production browser and source before publication
+        env:
+          REUSE: ${{ steps.existing.outputs.exists }}
+        run: |
+          if [ "$REUSE" = true ]; then docker pull "$IMAGE:$SOURCE_SHA"; fi
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE:$SOURCE_SHA")" = "$SOURCE_SHA"
+          docker run --rm --network none --user 1000:1000 -e HOME=/tmp --entrypoint node "$IMAGE:$SOURCE_SHA" /opt/paperclip-browser/smoke.cjs
+      - name: Publish verified image and resolve immutable digest
+        id: publish
+        env:
+          REUSE: ${{ steps.existing.outputs.exists }}
+        run: |
+          if [ "$REUSE" != true ]; then docker push "$IMAGE:$SOURCE_SHA"; fi
+          digest="$(docker buildx imagetools inspect "$IMAGE:$SOURCE_SHA" --format '{{.Manifest.Digest}}')"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: image
+    if: github.repository == 'TonyBrobston/paperclip' && github.ref == 'refs/heads/master' && github.event_name != 'pull_request' && vars.PAPERCLIP_DEPLOY_MODE == 'images'
+    runs-on: [self-hosted, linux, paperclip-deploy]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Deploy through trusted infrastructure checkout
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_IMAGE: ${{ needs.image.outputs.image }}
+          SOURCE_SHA: ${{ github.sha }}
+          COMPOSE_PROJECT_NAME: ${{ vars.PAPERCLIP_COMPOSE_PROJECT_NAME }}
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG
+          DOCKER_CONFIG="$(mktemp -d)"
+          trap 'rm -rf -- "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          bash "$PAPERCLIP_COMPOSE_DIR/deploy-paperclip-image.sh" deploy "$REQUESTED_IMAGE" "$SOURCE_SHA"

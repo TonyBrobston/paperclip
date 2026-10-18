@@ -35,7 +35,7 @@ jobs:
           docker run --rm --network none --user node -e HOME=/tmp --entrypoint node paperclip-browser-check /opt/paperclip-browser/smoke.cjs
   deploy:
     needs: browser-runtime
-    if: github.repository == 'TonyBrobston/paperclip' && github.ref == 'refs/heads/master'
+    if: github.repository == 'TonyBrobston/paperclip' && github.ref == 'refs/heads/master' && vars.PAPERCLIP_DEPLOY_MODE != 'images'
     runs-on: [self-hosted, linux, paperclip-deploy]
     timeout-minutes: 90
     steps:
