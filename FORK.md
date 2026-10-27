@@ -124,6 +124,10 @@ canonical repository.
 
 ## What the fork does not carry
 
+The 2026-10-27 refresh adopts upstream’s combined Google Workspace card for new
+connections and retains saved individual accounts. The earlier fork override
+that offered nine separate Google app cards is no longer carried.
+
 Every row above costs conflicts on each upstream merge — the 2026-10-09 refresh
 produced fourteen, all in the local-API surface. So a change earns a row only
 when the deployment needs it *and* upstream will not take it as-is. A fix that

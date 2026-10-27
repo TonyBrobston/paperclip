@@ -1,4 +1,10 @@
+import { mergeWindowComments, useIssueHistoryWindow } from "../hooks/useIssueHistoryWindow";
+import { useTaskRunLiveUpdates } from "../context/LiveUpdatesProvider";
+import { liveRunRefetchInterval } from "../lib/live-runs-cache";
+import { useTaskRetry } from "../hooks/useTaskRetry";
+import { grokBotApi } from "@/api/grokBot";
 import { WorkspaceBaseRefRecoveryProvider } from "../components/WorkspaceBaseRefRecovery";
+import { WorkspaceRetryControl } from "../components/WorkspaceRetryButton";
 import { isLockedIssueStub, LockedIssueChip } from "@/components/LockedIssueChip";
 import { canManageIssuePrivacy } from "../lib/issuePrivacy";
 import { TextAttachmentContext } from "../context/TextAttachmentContext";
@@ -21,7 +27,9 @@ import { EmailThreadProvider } from "../components/EmailMessageCard";
 import { EmailTaskActivity } from "../components/EmailTaskActivity";
 import { TaskChatScrollNavigation, taskChatScrollEntry } from "@/components/task-chat/scroll-navigation";
 import {
+  lazy,
   memo,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -121,6 +129,7 @@ import { prefetchIssueThread } from "../lib/issue-thread-queries";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
   beginIssueDetailNavigation,
+  recordIssueDetailReadiness,
   ISSUE_DETAIL_CONTENT_MEASURE,
   ISSUE_DETAIL_CONTENT_PAINT_MARK,
   ISSUE_DETAIL_HEADER_MEASURE,
@@ -185,6 +194,7 @@ import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { ProjectTile } from "../components/ProjectTile";
 import { InlineEditor } from "../components/InlineEditor";
+import { useDesignSandbox } from "../context/DesignSandboxContext";
 import {
   IssueChatThread,
   type IssueChatComposerHandle,
@@ -304,6 +314,7 @@ import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key"
 import { openSkillPanelState, shouldSuppressTaskPanelUntilPlan } from "../lib/task-side-panel-state";
 import {
   interactionReadinessRefetchInterval,
+  isDeferredConversationInteraction,
   buildAnsweredQuestionsDeliveryText,
   buildIssueThreadInteractionSummary,
 } from "../lib/issue-thread-interactions";
@@ -358,6 +369,7 @@ import {
   type IssueRecoveryAction,
   type IssueAttachment,
   type IssueComment,
+  type IssueRecentComments,
   type IssueDocumentSummary,
   type IssueWorkProduct,
   type IssueWorkMode,
@@ -419,6 +431,7 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   queueTargetRunId?: string | null;
   queueReason?: "hold" | "active_run" | "other";
   consumedByRunId?: string | null;
+  consumedQueueIds?: string[];
   steeredIntoRunId?: string | null;
   conversationAnchorAt?: Date | string | null;
   conversationAnchorSequence?: number;
@@ -1190,8 +1203,17 @@ function InboxMobileToolbar({
   );
 }
 
+interface RecentIssueRunWindow {
+  runs: RunForIssue[];
+  hasEarlierRuns: boolean;
+}
+
 type IssueDetailChatTabProps = {
+  executionBlocked?: boolean;
+  interruption?: Issue["interruption"];
+  retryPreparing?: boolean;
   queryIssueId?: string;
+  hasLiveConnection: boolean;
   browsers?: import("@paperclipai/shared").TaskBrowser[];
   onOpenBrowser?: (browserId: string) => void;
   onOpenSkill?: (skillId: string, name: string) => void;
@@ -1230,6 +1252,9 @@ type IssueDetailChatTabProps = {
   } | null;
   comments: IssueDetailComment[];
   commentsInitialLoading?: boolean;
+  historyExpanded?: boolean;
+  onExpandHistory?: () => void;
+  hasEarlierMessages?: boolean;
   initialHistoryPending?: boolean;
   initialMetadataPending?: boolean;
   initialHistoryError?: boolean;
@@ -1297,6 +1322,7 @@ type IssueDetailChatTabProps = {
   onImageUpload: (file: File) => Promise<string>;
   onAttachImage: (file: File) => Promise<IssueAttachment | void>;
   onInterruptQueued: (runId: string | null) => Promise<void>;
+  onRemoveCommentFromCache: (commentId: string) => Promise<void>;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   onPauseWorkRun?: (runId: string, feedback?: "composer") => Promise<void>;
   onStopResponse?: (runId: string) => Promise<void>;
@@ -1326,6 +1352,7 @@ type IssueDetailChatTabProps = {
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void>;
   onSkipInteraction: (interaction: IssueThreadInteraction) => Promise<void>;
+  onDismissInteraction: (interaction: IssueThreadInteraction) => Promise<void>;
   onSubmitInteractionVerdicts: (
     interaction: RequestItemVerdictsInteraction,
     verdicts: {
@@ -1345,8 +1372,14 @@ type IssueDetailChatTabProps = {
   linkCaseReferences?: boolean;
 };
 
+const DesignSandboxTaskThread = lazy(() => import("../components/design-sandbox/DesignSandboxTaskThread"));
+
 const IssueDetailChatTab = memo(function IssueDetailChatTab({
+  executionBlocked,
+  interruption,
+  retryPreparing,
   queryIssueId,
+  hasLiveConnection,
   browsers,
   onOpenBrowser,
   onOpenSkill,
@@ -1376,6 +1409,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   legacyRecoverySourceIssue,
   comments,
   commentsInitialLoading = false,
+  historyExpanded = true,
+  onExpandHistory,
+  hasEarlierMessages = false,
   initialHistoryPending = false,
   initialMetadataPending = false,
   initialHistoryError = false,
@@ -1419,6 +1455,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onImageUpload,
   onAttachImage,
   onInterruptQueued,
+  onRemoveCommentFromCache,
   onDeleteComment,
   onPauseWorkRun,
   onStopResponse,
@@ -1435,6 +1472,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onSubmitInteractionAnswers,
   onCancelInteraction,
   onSkipInteraction,
+  onDismissInteraction,
   onSubmitInteractionVerdicts,
   assigneeUserId,
   onResumeFromBacklog,
@@ -1453,6 +1491,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const ThreadComponent = classicTaskInterfaceEnabled
     ? IssueChatThread
     : TaskChatThread;
+  const designSandbox = useDesignSandbox();
   const queryClient = useQueryClient();
   const issueQueryRef = queryIssueId ?? issueId;
   const scrollLocation = useLocation();
@@ -1464,10 +1503,23 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     isError: activityError,
     refetch: refetchActivity,
   } = useQuery({
-    queryKey: queryKeys.issues.activity(issueQueryRef),
-    queryFn: () => activityApi.forIssue(issueQueryRef),
+    queryKey: historyExpanded ? queryKeys.issues.activity(issueQueryRef) : [...queryKeys.issues.activity(issueQueryRef), "recent"],
+    queryFn: async () => {
+      if (historyExpanded) return activityApi.forIssue(issueQueryRef);
+      const recent = await activityApi.recentForIssue(issueQueryRef);
+      const previous = queryClient.getQueryData<ActivityEvent[]>([...queryKeys.issues.activity(issueQueryRef), "recent"]) ?? [];
+      return [...new Map([...previous, ...recent].map((event) => [event.id, event])).values()];
+    },
     enabled: !!issueId,
-    placeholderData: keepPreviousDataForSameQueryTail<ActivityEvent[]>(issueQueryRef),
+    placeholderData: historyExpanded
+      ? queryClient.getQueryData<ActivityEvent[]>([...queryKeys.issues.activity(issueQueryRef), "recent"])
+      : undefined,
+  });
+  const inputCommentIds = comments.filter((comment) => !("clientStatus" in comment) || !comment.clientStatus).map((comment) => comment.id).sort();
+  const inputFacts = useQuery({
+    queryKey: [...queryKeys.issues.activity(issueQueryRef), "comment-inputs", inputCommentIds],
+    queryFn: () => activityApi.inputFactsForIssue(issueQueryRef, inputCommentIds),
+    enabled: !!issueId && !historyExpanded && inputCommentIds.length > 0,
   });
   const {
     data: liveRuns,
@@ -1478,7 +1530,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.liveRuns(issueQueryRef),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueQueryRef),
     enabled: !!issueId,
-    refetchInterval: 1000,
+    refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData:
       keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueQueryRef),
   });
@@ -1495,7 +1547,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.activeRun(issueQueryRef),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueQueryRef),
     enabled: activeRunQueryEnabled,
-    refetchInterval: liveRunCount > 0 ? false : 1000,
+    refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueQueryRef,
     ),
@@ -1571,21 +1623,58 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     setClassicQueuedDeliveryError(null);
   }, [issueId]);
   const hasLiveRuns = liveRunCount > 0 || !!resolvedActiveRun;
+  const linkedRunsKey = historyExpanded
+    ? queryKeys.issues.runs(issueQueryRef)
+    : [...queryKeys.issues.runs(issueQueryRef), "recent-window"];
   const {
-    data: linkedRuns,
+    data: linkedRunHistory,
     isPending: linkedRunsPending,
     isError: linkedRunsError,
     refetch: refetchLinkedRuns,
-  } = useQuery({
-    queryKey: queryKeys.issues.runs(issueQueryRef),
-    queryFn: () => activityApi.runsForIssue(issueQueryRef),
+  } = useQuery<RunForIssue[] | RecentIssueRunWindow>({
+    queryKey: linkedRunsKey,
+    queryFn: async () => {
+      if (historyExpanded) return activityApi.runsForIssue(issueQueryRef);
+      let recent = await activityApi.recentRunsForIssue(issueQueryRef);
+      const previousWindow = queryClient.getQueryData<RecentIssueRunWindow>(linkedRunsKey);
+      let previous = previousWindow?.runs ?? [];
+      let reconciledFullHistory = false;
+      if (previous.some((run) =>
+        (run.status === "running" || run.status === "queued") && !recent.some((next) => next.runId === run.runId),
+      )) {
+        // After a reconnect, several turns may have completed beyond the small
+        // window. Reconcile watched runs once against authoritative summaries.
+        recent = await activityApi.runsForIssue(issueQueryRef);
+        reconciledFullHistory = true;
+        const existingRunIds = new Set(recent.map((run) => run.runId));
+        previous = previous.filter((run) => existingRunIds.has(run.runId));
+      }
+      // The second row refreshes a just-finished predecessor. Start with only
+      // the latest run, then keep every run observed while this task is open.
+      const visible = new Set([...previous.map((run) => run.runId), ...recent.slice(0, 1).map((run) => run.runId)]);
+      return {
+        runs: [...new Map([...previous, ...recent].filter((run) => visible.has(run.runId)).map((run) => [run.runId, run])).values()],
+        // A first run is already visible. The disclosure needs evidence of an
+        // omitted run, and must retain that evidence as later turns arrive.
+        hasEarlierRuns: recent.some((run) => !visible.has(run.runId))
+          || (!reconciledFullHistory && recent.length >= 2 && previousWindow?.hasEarlierRuns === true),
+      };
+    },
     enabled: !!issueId,
     refetchInterval:
       hasLiveRuns || issueStatus === "in_progress" ? 1000 : false,
-    placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueQueryRef),
+    placeholderData: historyExpanded ? queryClient.getQueryData<RecentIssueRunWindow>([...queryKeys.issues.runs(issueQueryRef), "recent-window"])?.runs : undefined,
   });
-  const resolvedActivity = activity ?? [];
+  const linkedRuns = Array.isArray(linkedRunHistory) ? linkedRunHistory : linkedRunHistory?.runs;
+  const hasEarlierRuns = !Array.isArray(linkedRunHistory) && linkedRunHistory?.hasEarlierRuns === true;
+  const resolvedActivity = useMemo(
+    () => [...new Map([...(activity ?? []), ...(inputFacts.data ?? [])].map((event) => [event.id, event])).values()],
+    [activity, inputFacts.data],
+  );
   const resolvedLinkedRuns = linkedRuns ?? [];
+  useEffect(() => {
+    recordIssueDetailReadiness({ activity: !activityPending, "linked-runs": !linkedRunsPending, runtime: runtimeSelectionKnown });
+  }, [issueId, issueQueryRef, activityPending, linkedRunsPending, runtimeSelectionKnown]);
   const retryFailedRun = useMutation({
     mutationFn: async (runId: string) => {
       const failedRun = resolvedLinkedRuns.find((run) => run.runId === runId);
@@ -1629,6 +1718,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     () => resolveInterruptibleIssueRun(resolvedActiveRun, resolvedLiveRuns),
     [resolvedActiveRun, resolvedLiveRuns],
   );
+  const currentRunAgent = interruptibleIssueRun ? agentMap.get(interruptibleIssueRun.agentId) : null;
+  const grokWork = currentRunAgent?.adapterType === "paperclip_runner" && currentRunAgent.adapterConfig.provider === "grok_bot";
+  const stopGrokWork = useMutation({
+    mutationFn: (run: { id: string; agentId: string }) => grokBotApi.stop(companyId, run.agentId, run.id),
+    onSettled: (_data, _error, run) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId) }),
+      queryClient.invalidateQueries({ queryKey: ["grok-binding", companyId, run.agentId] }),
+    ]),
+  });
   const liveRunIds = useMemo(() => {
     const ids = new Set<string>();
     for (const run of resolvedLiveRuns) ids.add(run.id);
@@ -1669,11 +1768,13 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         sequence: number;
         anchorMs: number;
         kind: "run_start" | "steer";
+        queueIds: Set<string>;
       }
     >();
 
     for (const run of resolvedLinkedRuns) {
       agentIdByRunId.set(run.runId, run.agentId);
+      if (run.status === "queued" || !run.startedAt) continue;
       const batchedIds = Array.isArray(run.wakeCommentIds)
         ? run.wakeCommentIds.filter(
             (value): value is string =>
@@ -1693,6 +1794,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       const anchorMs = new Date(anchorAt).getTime();
       inputIds.forEach((commentId, sequence) => {
         const existing = inputPlacementByCommentId.get(commentId);
+        const queueIds = existing?.queueIds ?? new Set<string>();
+        if (run.wakeupRequestId) queueIds.add(run.wakeupRequestId);
+        if (Array.isArray(run.queuedCommentSourceWakeIds)) {
+          for (const queueId of run.queuedCommentSourceWakeIds) queueIds.add(queueId);
+        }
         if (existing && existing.anchorMs <= anchorMs) return;
         inputPlacementByCommentId.set(commentId, {
           runId: run.runId,
@@ -1700,8 +1806,31 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           sequence,
           anchorMs,
           kind: "run_start",
+          queueIds,
         });
       });
+    }
+    for (const run of [resolvedActiveRun, ...resolvedLiveRuns]) {
+      if (!run || run.status !== "running" || !run.startedAt) continue;
+      const anchorAt = new Date(run.startedAt).toISOString();
+      for (const commentId of [run.contextCommentId, run.contextWakeCommentId]) {
+        if (!commentId) continue;
+        const existing = inputPlacementByCommentId.get(commentId);
+        const queueIds = existing?.queueIds ?? new Set<string>();
+        if (run.wakeupRequestId) queueIds.add(run.wakeupRequestId);
+        if (Array.isArray(run.queuedCommentSourceWakeIds)) {
+          for (const queueId of run.queuedCommentSourceWakeIds) queueIds.add(queueId);
+        }
+        if (existing) continue;
+        inputPlacementByCommentId.set(commentId, {
+          runId: run.id,
+          anchorAt,
+          sequence: 0,
+          anchorMs: new Date(anchorAt).getTime(),
+          kind: "run_start",
+          queueIds,
+        });
+      }
     }
     // Same-turn steering has a durable PRP acknowledgement and a matching
     // activity fact keyed by commentId/targetRunId. Its acknowledgement time,
@@ -1739,6 +1868,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         sequence,
         anchorMs,
         kind: "steer",
+        queueIds: inputPlacementByCommentId.get(commentId)?.queueIds ?? new Set(),
       });
     }
     for (const [commentId, placement] of localSteeringPlacements) {
@@ -1749,6 +1879,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         sequence: placement.sequence,
         anchorMs: new Date(placement.anchorAt).getTime(),
         kind: "steer",
+        queueIds: new Set(),
       });
     }
     for (const evt of resolvedActivity) {
@@ -1860,6 +1991,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         ...(inputPlacement
           ? {
               consumedByRunId: inputPlacement.runId,
+              consumedQueueIds: [...inputPlacement.queueIds],
               ...(inputPlacement.kind === "steer"
                 ? { steeredIntoRunId: inputPlacement.runId }
                 : {}),
@@ -1875,8 +2007,14 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         locallyQueuedCommentRunIds.get(comment.id) ??
         nextComment.queueTargetRunId ??
         null;
-      if (inputPlacement?.kind === "steer") {
-        return nextComment;
+      if (inputPlacement) {
+        return {
+          ...nextComment,
+          clientStatus: undefined,
+          queueState: undefined,
+          queueTargetRunId: null,
+          queueReason: undefined,
+        };
       }
       const locallyQueuedComment = applyLocalQueuedIssueCommentState(
         nextComment,
@@ -2027,23 +2165,39 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queuedCommentReason,
     resolvedActivity,
     resolvedLinkedRuns,
+    resolvedActiveRun,
+    resolvedLiveRuns,
     interruptibleIssueRun,
   ]);
   const effectiveQueuedCommentQueue = useMemo(() => {
     if (!queuedCommentQueueEnabled) return null;
+    const deliveredCommentRunIds = new Map<string, string>();
+    const deliveredCommentQueueIds = new Map<string, string[]>();
+    for (const comment of commentsWithRunMeta) {
+      if (comment.consumedByRunId) {
+        deliveredCommentRunIds.set(comment.id, comment.consumedByRunId);
+        deliveredCommentQueueIds.set(comment.id, comment.consumedQueueIds ?? []);
+      }
+    }
     const visibleAuthoritativeQueue = authoritativeQueuedCommentQueue
       ? {
           ...authoritativeQueuedCommentQueue,
           entries: authoritativeQueuedCommentQueue.entries.filter(
             (entry) =>
               !consumedQueuedCommentIds.has(entry.comment.id) &&
-              !discardedQueuedCommentIds.has(entry.comment.id),
+              !discardedQueuedCommentIds.has(entry.comment.id) &&
+              !deliveredCommentQueueIds.get(entry.comment.id)?.includes(
+                authoritativeQueuedCommentQueue.queueId ?? "",
+              ) &&
+              deliveredCommentRunIds.get(entry.comment.id) !==
+                authoritativeQueuedCommentQueue.targetRunId,
           ),
         }
       : null;
     const pendingComments = commentsWithRunMeta.flatMap((comment) => {
       if (
         consumedQueuedCommentIds.has(comment.id) ||
+        deliveredCommentRunIds.has(comment.id) ||
         discardedQueuedCommentIds.has(comment.id) ||
         comment.steeredIntoRunId
       ) {
@@ -2322,19 +2476,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         setDiscardedQueuedCommentIds((current) =>
           new Set(current).add(commentId),
         );
-        // Discard deletes the persisted issue comment. Remove the cached copy
-        // in the same commit as the queue update so it cannot briefly return as
-        // a normal user bubble when the now-empty queue loses its queueId.
-        queryClient.setQueryData<
-          InfiniteData<IssueComment[], string | null> | undefined
-        >(queryKeys.issues.comments(issueId), (current) =>
-          current
-            ? {
-                ...current,
-                pages: removeIssueCommentFromPages(current.pages, commentId),
-              }
-            : current,
-        );
+        // Discard deletes the persisted comment. Update both history caches
+        // and task aliases so the row stays removed after this view unmounts.
+        await onRemoveCommentFromCache(commentId);
         await queryClient.invalidateQueries({
           queryKey: queryKeys.issues.comments(issueId),
         });
@@ -2372,6 +2516,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     [
       effectiveQueuedCommentQueue?.queueId,
       issueId,
+      onRemoveCommentFromCache,
       pushToast,
       queryClient,
       refreshQueueAfterConflict,
@@ -2404,7 +2549,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     </div>
   ) : null;
 
-  return (
+  const savedThread = (
     <div
       className={
         classicTaskInterfaceEnabled
@@ -2429,13 +2574,25 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         >
           <EmailThreadProvider companyId={companyId} issueId={issueId}>
           <ThreadComponent
+            {...(!classicTaskInterfaceEnabled ? {
+              compactHistory: !historyExpanded,
+              onExpandHistory,
+              historyControl: !historyExpanded && (hasEarlierMessages || hasEarlierRuns) ? (
+                <Button type="button" variant="ghost" size="sm" onClick={onExpandHistory}>
+                  More messages
+                </Button>
+              ) : null,
+            } : {})}
+            executionBlocked={executionBlocked}
+            interruption={interruption}
+            retryPreparing={retryPreparing}
             key={conversationMode ? draftKey : issueId}
             {...(!classicTaskInterfaceEnabled ? { creationActivity: resolvedActivity } : {})}
             onOpenSkill={onOpenSkill}
             browsers={browsers}
             onOpenBrowser={onOpenBrowser}
             hasOlderComments={hasOlderComments}
-            initialHistoryPending={!!issueId && (
+            initialHistoryPending={historyExpanded && !!issueId && (
               initialHistoryPending ||
               commentsInitialLoading ||
               // These responses add rows or change the composer takeover.
@@ -2449,6 +2606,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             initialHistoryError={
               initialHistoryError ||
               activityError ||
+              (!historyExpanded && inputFacts.isError) ||
               linkedRunsError ||
               liveRunsError ||
               (activeRunQueryEnabled && activeRunError)
@@ -2456,12 +2614,13 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             onRetryInitialHistory={() => {
               onRetryInitialHistory?.();
               void refetchActivity();
+              if (!historyExpanded && inputCommentIds.length) void inputFacts.refetch();
               void refetchLinkedRuns();
               void refetchLiveRuns();
               if (activeRunQueryEnabled) void refetchActiveRun();
             }}
             composerRef={composerRef}
-            composerAccessory={composerAccessory}
+            composerAccessory={<><WorkspaceRetryControl />{composerAccessory}</>}
             threadHeader={
               !classicTaskInterfaceEnabled &&
               (threadHeader || loadOlderButton) ? (
@@ -2497,7 +2656,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             blockerAttention={blockerAttention}
             successfulRunHandoff={successfulRunHandoff}
             scheduledRetry={scheduledRetry}
-            recoveryAction={recoveryAction ?? null}
+            recoveryAction={recoveryAction?.cause === "native_workspace_finalization_owner_unverified" ? null : recoveryAction ?? null}
             onResolveRecoveryAction={onResolveRecoveryAction}
             onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
             reissueIsolatedRecoveryActionPending={
@@ -2551,18 +2710,27 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             onCancelQueued={onCancelQueued}
             interruptingQueuedRunId={interruptingQueuedRunId}
             stoppingRunId={
-              pauseWorkPending
+              stopGrokWork.isPending ? stopGrokWork.variables.id : pauseWorkPending
                 ? (pausingWorkRunId ?? interruptibleIssueRun?.id ?? null)
                 : pausingWorkRunId
             }
             onStopRun={
-              onPauseWorkRun
-                ? (runId) => onPauseWorkRun(runId).catch(() => undefined)
+              grokWork || onPauseWorkRun
+                ? async (runId) => {
+                    const selectedRun = resolvedLiveRuns.find(run => run.id === runId)
+                      ?? (resolvedActiveRun?.id === runId ? resolvedActiveRun : null);
+                    const selectedAgent = selectedRun ? agentMap.get(selectedRun.agentId) : null;
+                    if (selectedRun && selectedAgent?.adapterType === "paperclip_runner" && selectedAgent.adapterConfig.provider === "grok_bot") {
+                      await stopGrokWork.mutateAsync(selectedRun).catch(() => undefined);
+                    } else if (onPauseWorkRun) {
+                      await onPauseWorkRun(runId).catch(() => undefined);
+                    }
+                  }
                 : undefined
             }
-            stopRunLabel="Pause work"
-            stoppingRunLabel="Pausing..."
-            stopRunVariant="pause"
+            stopRunLabel={grokWork ? "Stop Paperclip work" : "Pause work"}
+            stoppingRunLabel={grokWork ? "Stopping Paperclip work…" : "Pausing..."}
+            stopRunVariant={grokWork ? "stop" : "pause"}
             runFinalizationActions={runFinalizationActions}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
@@ -2571,12 +2739,13 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             }
             onCancelInteraction={onCancelInteraction}
             onSkipInteraction={onSkipInteraction}
+            onDismissInteraction={onDismissInteraction}
             onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
             issueWorkMode={issueWorkMode}
             onWorkModeChange={onWorkModeChange}
-            stopPending={stopResponsePending}
+            stopPending={grokWork ? stopGrokWork.isPending : stopResponsePending}
             onCancelRun={
-              interruptibleIssueRun && onStopResponse
+              grokWork && interruptibleIssueRun ? () => stopGrokWork.mutateAsync(interruptibleIssueRun).then(() => undefined) : interruptibleIssueRun && onStopResponse
                 ? () => onStopResponse(interruptibleIssueRun.id)
                 : undefined
             }
@@ -2591,14 +2760,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             tryAgainNoLiveExecutionPathPending={
               tryAgainNoLiveExecutionPathPending
             }
-            footer={classicQueuedDeliveryError ? (
-              <>
-                <p role="status" className="text-sm text-destructive">
-                  {classicQueuedDeliveryError}
-                </p>
-                {footer}
-              </>
-            ) : footer}
+            footer={grokWork || stopGrokWork.error || classicQueuedDeliveryError ? <>
+              {grokWork && <p className="text-xs text-muted-foreground">Runs in Grok Bot · Usage not reported. Stop Paperclip work revokes this session’s authority; remote execution may continue. Open the Grok Bot desktop app to inspect it.</p>}
+              {stopGrokWork.error && <p role="alert" className="text-sm text-destructive">{stopGrokWork.error.message}</p>}
+              {classicQueuedDeliveryError && <p role="status" className="text-sm text-destructive">{classicQueuedDeliveryError}</p>}
+              {footer}
+            </> : footer}
             externalReferences={externalReferences}
             linkCaseReferences={linkCaseReferences}
           />
@@ -2607,6 +2774,21 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       )}
     </div>
   );
+
+  return import.meta.env.DEV && designSandbox && !classicTaskInterfaceEnabled && !conversationMode ? (
+    <Suspense fallback={savedThread}>
+      <DesignSandboxTaskThread
+        previewMode="playback"
+        key={issueId}
+        header={threadHeader}
+        agentName={agentMap.get(issueAssigneeAgentId ?? "")?.name ?? "Preview agent"}
+        agent={agentMap.get(issueAssigneeAgentId ?? "")}
+        defaultConversation={issueQueryRef === "DES-1" || issueQueryRef === "DES-7"}
+      >
+        {savedThread}
+      </DesignSandboxTaskThread>
+    </Suspense>
+  ) : savedThread;
 });
 
 type IssueDetailActivityTabProps = {
@@ -2997,6 +3179,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     streamlinedUiEnabled,
     loaded: taskInterfaceSettingsLoaded,
   } = useTaskDetailInterfaceMode(!!conversation);
+  const designSandbox = useDesignSandbox();
+  const proposedTaskHeader = designSandbox && streamlinedTaskDetailEnabled;
   // Chat-style: the page wrapper spans the full center pane so the thread's
   // scroll viewport (and its scrollbar) reaches the properties-pane border;
   // every non-thread section re-centers itself at the 60rem shell cap instead.
@@ -3107,11 +3291,22 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [location.state, resolvedIssueDetailState],
   );
 
+  const coreIssueQuery = useQuery({
+    queryKey: [...queryKeys.issues.detail(issueId!), "core"],
+    queryFn: ({ signal }) => issuesApi.getCore(issueId!, { signal }),
+    enabled: !!issueId,
+  });
+  const { historyExpanded, expandHistory, recent: recentComments } = useIssueHistoryWindow(
+    issueId,
+    Boolean(conversation || classicTaskInterfaceEnabled || location.hash || detailTab !== "chat"),
+    coreIssueQuery.data,
+  );
   const {
     data: queriedIssue,
     isLoading,
     isPlaceholderData,
     error,
+    refetch: refetchIssueDetail,
   } = useQuery({
     ...getIssueDetailQueryOptions(queryClient, issueId!, {
       placeholderIssue: issueHeaderSeed
@@ -3121,12 +3316,16 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           }
         : null,
     }),
-    enabled: !!issueId,
+    enabled: !!issueId && (coreIssueQuery.isFetched || !!queryClient.getQueryData(queryKeys.issues.detail(issueId))),
   });
   useEffect(() => {
-    if (issueId) void prefetchIssueThread(queryClient, issueId);
-  }, [issueId, queryClient]);
-  const issue = queriedIssue ?? conversation?.issue ?? draftIssue;
+    if (issueId && historyExpanded) void prefetchIssueThread(queryClient, issueId);
+  }, [issueId, historyExpanded, queryClient]);
+  const accessError = [error, coreIssueQuery.error].find((value) =>
+    value instanceof ApiError && [401, 403, 404].includes(value.status),
+  );
+  const issue = accessError ? undefined : queriedIssue ?? coreIssueQuery.data ?? conversation?.issue ?? draftIssue;
+  const taskRetry = useTaskRetry(issue ?? undefined);
   const resolveWritableIssueId = async () => {
     if (!conversation) return issueId!;
     const resolved = await conversation.ensureIssue();
@@ -3141,7 +3340,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // or upload against the previous task while the requested task is loading.
   const loadedIssue =
     !isPlaceholderData &&
-    !error &&
+    (!error || !!coreIssueQuery.data) &&
     issue &&
     issueId &&
     (issue.id.toLowerCase() === issueId.toLowerCase() ||
@@ -3158,6 +3357,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     !hasLegacyIssueDetailQuery(location.search)
   ));
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
+  const hasLiveConnection = useTaskRunLiveUpdates({ companyId: resolvedCompanyId, issueId: issue?.id ?? issueId, issueQueryRef: issueId ?? "pending", assigneeAgentId: issue?.assigneeAgentId });
   const externalObjectsState = useIssueExternalObjects(conversation && !conversation.issue ? null : issue?.id ?? null);
   // A closed isolated workspace no longer blocks the composer. The server reopens
   // the workspace when the next comment or resume arrives, so the composer stays
@@ -3187,7 +3387,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         limit: ISSUE_COMMENT_PAGE_SIZE,
         ...(pageParam ? { after: pageParam } : {}),
       }),
-    enabled: !!issueId,
+    enabled: !!issueId && historyExpanded,
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) =>
       getNextIssueCommentPageParam(lastPage, ISSUE_COMMENT_PAGE_SIZE),
@@ -3196,8 +3396,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     >(issueId ?? "pending"),
   });
   const comments = useMemo(
-    () => flattenIssueCommentPages(commentPages?.pages),
-    [commentPages?.pages],
+    () => mergeWindowComments(recentComments.data?.comments ?? [], flattenIssueCommentPages(commentPages?.pages)),
+    [commentPages?.pages, recentComments.data?.comments],
   );
 
   useLayoutEffect(() => {
@@ -3235,7 +3435,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
   const shouldPrefetchOlderComments = useMemo(
     () =>
-      shouldAutoloadOlderIssueComments({
+      historyExpanded && shouldAutoloadOlderIssueComments({
         activeDetailTab: detailTab,
         hasOlderComments: hasOlderComments ?? false,
         loadedCommentCount: comments.length,
@@ -3247,6 +3447,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       comments.length,
       commentsLoading,
       commentsLoadingOlder,
+      historyExpanded,
       detailTab,
       hasOlderComments,
     ],
@@ -3288,13 +3489,16 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     isError: workProductsError,
     refetch: refetchWorkProducts,
   } = useIssueWorkProducts(issueId);
+  useEffect(() => {
+    recordIssueDetailReadiness({ issue: !!loadedIssue, comments: !commentsLoading, interactions: !interactionsLoading, attachments: !attachmentsLoading, "work-products": !workProductsLoading });
+  }, [issueId, loadedIssue, commentsLoading, interactionsLoading, attachmentsLoading, workProductsLoading]);
 
   const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>(
     {
       queryKey: queryKeys.issues.liveRuns(issueId!),
       queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
       enabled: !!issueId,
-      refetchInterval: 3000,
+      refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
       select: (runs) => runs.length,
       placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(
         issueId ?? "pending",
@@ -3311,7 +3515,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled:
       !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
     select: (run) => !!run,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueId ?? "pending",
@@ -3870,7 +4074,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const threadComments = useMemo(
     () =>
-      mergeIssueComments(comments ?? [], optimisticComments).map((comment) => {
+      mergeIssueComments(comments ?? [], optimisticComments)
+      .filter(comment => !(comment.authorType === "system" && comment.metadata?.recoveryResponsibility === "system"))
+      .map((comment) => {
         if ("clientId" in comment && comment.clientId)
           commentRenderKeys.current.set(comment.id, comment.clientId);
         const clientId = commentRenderKeys.current.get(comment.id);
@@ -3962,18 +4168,33 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   }, [issueId, queryClient]);
 
   const removeCommentFromCache = useCallback(
-    (commentId: string) => {
-      queryClient.setQueryData<
-        InfiniteData<IssueComment[], string | null> | undefined
-      >(queryKeys.issues.comments(issueId!), (current) => {
-        if (!current) return current;
-        return {
-          ...current,
-          pages: removeIssueCommentFromPages(current.pages, commentId),
-        };
-      });
+    async (commentId: string) => {
+      // Cancel reads started before deletion so they cannot restore stale rows.
+      await Promise.all(issueCacheRefs.map((ref) =>
+        queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(ref) }),
+      ));
+      for (const ref of issueCacheRefs) {
+        queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
+          queryKeys.issues.comments(ref),
+          (current) => current && { ...current, pages: removeIssueCommentFromPages(current.pages, commentId) },
+        );
+        queryClient.setQueryData<IssueRecentComments>(
+          [...queryKeys.issues.comments(ref), "recent"],
+          (current) => {
+            if (!current) return current;
+            const comments = mergeWindowComments(current.comments.filter((comment) => comment.id !== commentId));
+            return {
+              ...current,
+              comments,
+              latestCommentId: current.latestCommentId === commentId
+                ? comments.at(-1)?.id ?? null
+                : current.latestCommentId,
+            };
+          },
+        );
+      }
     },
-    [issueId, queryClient],
+    [issueCacheRefs, queryClient],
   );
 
   const clearCommentHashIfCurrent = useCallback(
@@ -3990,7 +4211,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
 
   const upsertCommentInCache = useCallback(
-    (comment: IssueComment) => {
+    async (comment: IssueComment) => {
+      await Promise.all(issueCacheRefs.map((ref) =>
+        queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(ref) }),
+      ));
       for (const ref of issueCacheRefs) {
         queryClient.setQueryData<
           InfiniteData<IssueComment[], string | null> | undefined
@@ -4001,6 +4225,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 pages: upsertIssueCommentInPages(current.pages, comment),
               }
             : current,
+        );
+        queryClient.setQueryData<IssueRecentComments>(
+          [...queryKeys.issues.comments(ref), "recent"],
+          (current) => current && {
+            ...current,
+            comments: current.comments.map((existing) => existing.id === comment.id ? comment : existing),
+          },
         );
       }
     },
@@ -4755,6 +4986,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         );
         try {
           await issuesApi.cancelComment(comment.issueId, comment.id);
+          await removeCommentFromCache(comment.id);
           invalidateIssueDetail();
           invalidateIssueThreadLazily();
           invalidateIssueCollections();
@@ -4796,6 +5028,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 pages: upsertIssueCommentInPages(undefined, comment),
               },
       );
+      // A locally seeded page is not a complete history page. Expansion must
+      // fetch the real first page even within the normal cache freshness window.
+      if (!historyExpanded) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId ?? comment.issueId), exact: true, refetchType: "none" });
+      }
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
           current.filter(
@@ -5037,6 +5274,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
   });
 
+  const dismissInteraction = useMutation({
+    mutationFn: (interaction: IssueThreadInteraction) => issuesApi.dismissInteraction(issueId!, interaction.id),
+    onSuccess: (interaction) => {
+      upsertInteractionInCache(interaction);
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+    },
+  });
+
   const skipInteraction = useMutation({
     mutationFn: ({ interaction }: { interaction: IssueThreadInteraction }) =>
       issuesApi.skipInteraction(issueId!, interaction.id),
@@ -5164,6 +5410,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         );
         try {
           await issuesApi.cancelComment(issueId!, comment.id);
+          await removeCommentFromCache(comment.id);
           invalidateIssueDetail();
           invalidateIssueThreadLazily();
           invalidateIssueCollections();
@@ -5208,6 +5455,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   pages: upsertIssueCommentInPages(undefined, comment),
                 },
         );
+        if (!historyExpanded) {
+          await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!), exact: true, refetchType: "none" });
+        }
       }
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
@@ -5272,14 +5522,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const cancelQueuedComment = useMutation({
     mutationFn: async ({ commentId }: { commentId: string }) =>
       issuesApi.cancelComment(issueId!, commentId),
-    onSuccess: (comment) => {
+    onSuccess: async (comment) => {
       setLocallyQueuedCommentRunIds((current) => {
         if (!current.has(comment.id)) return current;
         const next = new Map(current);
         next.delete(comment.id);
         return next;
       });
-      removeCommentFromCache(comment.id);
+      await removeCommentFromCache(comment.id);
       restoreQueuedCommentDraft(comment.body);
       invalidateIssueDetail();
       invalidateIssueThreadLazily();
@@ -5305,8 +5555,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const deleteComment = useMutation({
     mutationFn: async ({ commentId }: { commentId: string }) =>
       issuesApi.deleteComment(issueId!, commentId),
-    onSuccess: (comment) => {
-      upsertCommentInCache(comment);
+    onSuccess: async (comment) => {
+      await upsertCommentInCache(comment);
       clearCommentHashIfCurrent(comment.id);
       invalidateIssueDetail();
       invalidateIssueThreadLazily();
@@ -6913,9 +7163,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     );
   }, [activePauseHold, issue]);
 
-  if (isLoading)
+  if (!issue && !accessError && (isLoading || coreIssueQuery.isPending))
     return <IssueDetailLoadingState headerSeed={issueHeaderSeed} />;
-  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
+  if (!issue && (error || coreIssueQuery.error)) return <p className="text-sm text-destructive">{(error || coreIssueQuery.error)?.message}</p>;
   if (!issue) return null;
   // Do not expose a file chooser on the outgoing UUID/company/interface
   // branch: its input can be detached before the chosen file is returned.
@@ -7103,7 +7353,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const issueStatusControl = (
     <StatusIcon
       status={issue.status} externalConversationState={issue.externalConversationState}
-      size="lg"
+      size={proposedTaskHeader ? "md" : "lg"}
       blockerAttention={issue.blockerAttention}
       onChange={(status) => updateIssue.mutate({ status })}
     />
@@ -7119,7 +7369,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     >
       {streamlinedTaskDetailEnabled ? (
         <div className="flex min-w-0 items-start gap-2 md:items-center md:pr-8">
-          <div className="hidden md:block">{issueStatusControl}</div>
+          {!proposedTaskHeader ? (
+            <div className="hidden md:block">{issueStatusControl}</div>
+          ) : null}
           <div
             data-slot="task-detail-title"
             className="flex min-w-0 flex-1 items-baseline gap-2"
@@ -7128,14 +7380,20 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               value={issue.title}
               onSave={(title) => updateIssue.mutateAsync({ title })}
               as="h2"
-              className="min-w-0 text-xl font-semibold leading-normal text-balance"
+              className={cn(
+                "min-w-0 text-balance",
+                proposedTaskHeader ? "text-2xl font-normal text-foreground" : "text-xl font-semibold",
+                "leading-normal",
+              )}
             />
-            <span
-              data-slot="task-title-identifier"
-              className="hidden shrink-0 font-mono text-sm text-muted-foreground md:inline"
-            >
-              {issue.identifier ?? issue.id.slice(0, 8)}
-            </span>
+            {!proposedTaskHeader ? (
+              <span
+                data-slot="task-title-identifier"
+                className="hidden shrink-0 font-mono text-sm text-muted-foreground md:inline"
+              >
+                {issue.identifier ?? issue.id.slice(0, 8)}
+              </span>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -7143,13 +7401,22 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       <div
         className={cn(
           "flex min-w-0 flex-wrap items-center gap-2",
-          streamlinedTaskDetailEnabled && "gap-x-3 gap-y-2 md:gap-x-6 md:pl-7",
+          streamlinedTaskDetailEnabled &&
+            (proposedTaskHeader ? "gap-x-6 gap-y-2" : "gap-x-3 gap-y-2 md:gap-x-6 md:pl-7"),
         )}
       >
-        {streamlinedTaskDetailEnabled ? (
+        {proposedTaskHeader ? (
+          <div className="flex shrink-0 items-center gap-2">
+            {issueStatusControl}
+            <span data-slot="task-title-identifier" className="font-mono text-sm text-muted-foreground">
+              {issue.identifier ?? issue.id.slice(0, 8)}
+            </span>
+          </div>
+        ) : null}
+        {streamlinedTaskDetailEnabled && !proposedTaskHeader ? (
           <div className="md:hidden">{issueStatusControl}</div>
         ) : null}
-        {streamlinedTaskDetailEnabled ? (
+        {streamlinedTaskDetailEnabled && !proposedTaskHeader ? (
           <span className="shrink-0 font-mono text-sm text-muted-foreground md:hidden">
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
@@ -7407,10 +7674,22 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     }
                   }}
                 >
-                  <MoreHorizontal className="h-4 w-4" />
+                  <MoreHorizontal className={proposedTaskHeader ? "h-3 w-3" : "h-4 w-4"} />
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-52 p-1" align="end">
+                {taskChatShellEnabled && !historyExpanded ? (
+                  <button
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50"
+                    onClick={() => {
+                      expandHistory();
+                      setMoreOpen(false);
+                    }}
+                  >
+                    <ActivityIcon className="h-3 w-3" />
+                    Show task activity
+                  </button>
+                ) : null}
                 {streamlinedTaskDetailEnabled ? (
                   <>
                     <button
@@ -7632,11 +7911,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           data-task-chat-shell={taskChatShellEnabled ? "" : undefined}
           className={
             taskChatShellEnabled
-              ? isMobile
-                ? // Mobile shell scrolls the DOCUMENT (main is overflow-visible,
-                  // auto height) — the thread renders in normal flow (PAP-360).
-                  "flex w-full flex-col gap-6"
-                : // Fill main exactly so the outer page never scrolls — the
+              ? // Fill main exactly so the outer page never scrolls — the
                   // thread's own viewport is the only scroll surface.
                   // Keep status banners close to the transcript. A full section
                   // gap here shortens the pinned message viewport enough to
@@ -7645,6 +7920,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               : "max-w-3xl space-y-6"
           }
         >
+          {error && coreIssueQuery.data ? (
+            <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+              Some task details could not be loaded.
+              <Button type="button" variant="ghost" size="sm" onClick={() => void refetchIssueDetail()}>Retry</Button>
+            </div>
+          ) : null}
           {/* Parent chain breadcrumb (redesign: rendered inside the thread viewport) */}
           {taskChatShellEnabled ? null : ancestorsNav}
           {taskChatShellEnabled ? null : createdFromNote}
@@ -7652,19 +7933,23 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           <ExternallyConnectedTaskBanner
             className={cn(shellSectionClass, "mt-3")}
             key={issue.id}
+            assigneeAgentId={issue.assigneeAgentId}
             attachments={attachments ?? []}
             companyId={issue.companyId}
             issueId={issue.id}
             issueCacheRefs={issueCacheRefs}
           />
 
-          {resolvedDetailTab === "chat" && (
-            <WorkspaceExportRecovery key={`workspace-export:${issue.activeRecoveryAction?.id ?? issue.id}`} issueId={issue.id}
+          {resolvedDetailTab === "chat" && !issue.interruption && !issue.executionBlocker?.workspaceRecovery && (
+            <WorkspaceExportRecovery key={`workspace-export:${issue.activeRecoveryAction?.id ?? issue.id}`}
               className={shellSectionClass}
-              action={issue.activeRecoveryAction ?? null} canManage={canManageBoardRuntime} onQueued={invalidateIssueDetail} />
+              action={issue.activeRecoveryAction ?? null} />
           )}
-          {resolvedDetailTab === "chat" && issue.executionBlocker && (
-            <ExecutionBlockerNotice className={shellSectionClass} companyId={issue.companyId} issueId={issue.id} blocker={issue.executionBlocker} onRetried={invalidateIssueDetail} />
+          {resolvedDetailTab === "chat" && (
+            <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption}
+              issueId={issue.id} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
+              canRetry={canResolveBoardRecoveryAction} onRetry={taskRetry.retry}
+              optimistic={taskRetry.optimistic} takingLonger={taskRetry.takingLonger} error={taskRetry.error} />
           )}
 
           {issue.status === "in_review" && issue.externalConversationState === "waiting" && (
@@ -7920,9 +8205,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             onValueChange={setDetailTab}
             className={
               taskChatShellEnabled
-                ? isMobile
-                  ? undefined
-                  : "min-h-0 flex-1"
+                ? "min-h-0 flex-1"
                 : "space-y-3"
             }
           >
@@ -7962,8 +8245,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 taskChatShellEnabled
                   ? isMobile
                     ? streamlinedTaskDetailEnabled
-                      ? undefined
-                      : "-mx-4"
+                      ? "flex min-h-0 flex-1 flex-col"
+                      : "-mx-4 flex min-h-0 flex-1 flex-col"
                     : streamlinedTaskDetailEnabled
                       ? "flex min-h-0 flex-col"
                       : "-mx-4 -mt-4 md:-mx-6 md:-mt-6 flex min-h-0 flex-col"
@@ -7972,15 +8255,16 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             >
               {resolvedDetailTab === "chat" ? (
                 <WorkspaceBaseRefRecoveryProvider issue={issue} agentMap={agentMap} onRepaired={() => { invalidateIssueDetail(); invalidateIssueCollections(); }}
-                  unavailableReason={!canManageBoardRuntime || !canResolveBoardRecoveryAction ? "You don’t have permission to repair this task’s workspace."
+                  baseRefUnavailableReason={!canManageBoardRuntime ? "You don’t have permission to repair this task’s workspace." : null}
+                  unavailableReason={!canResolveBoardRecoveryAction ? "You don’t have permission to retry this task."
                     : treeControlStateError ? "Couldn’t check whether this task is paused. Refresh to try again."
                     : activePauseHold ? "Resume the task before retrying."
                     : issue.project?.pausedAt ? "Resume the project before retrying."
-                    : interactions.some(i => i.status === "pending") ? "Respond to the pending question or confirmation before retrying." : null}>
+                    : interactions.some(i => i.status === "pending" && !isDeferredConversationInteraction(i)) ? "Respond to the pending question or confirmation before retrying." : null}>
                 <DispositionRecoveryProvider value={{
                   issue,
                   agentMap,
-                  hasPendingInteraction: interactions.some((interaction) => interaction.status === "pending"),
+                  hasPendingInteraction: interactions.some((interaction) => interaction.status === "pending" && !isDeferredConversationInteraction(interaction)),
                   unavailableReason: boardAccess && !canResolveBoardRecoveryAction
                     ? "You don’t have permission to retry this recovery action."
                     : treeControlStateError
@@ -7993,7 +8277,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   onRetry: (actionId) => retryDispositionRecovery.mutateAsync(actionId).then(() => undefined),
                 }}>
                 <IssueDetailChatTab
+                  executionBlocked={Boolean(issue.executionBlocker)}
+                  interruption={issue.interruption}
+                  retryPreparing={taskRetry.optimistic}
                   queryIssueId={issueId ?? issue.id}
+                  hasLiveConnection={hasLiveConnection}
                   onOpenSkill={handleOpenSkill}
                   browsers={browserQuery.data}
                   onOpenBrowser={(id) => { setOpenBrowserId(id); if (isMobile) setMobilePropsOpen(true); else openTaskSidePanel(); }}
@@ -8046,7 +8334,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   blockerAttention={issue.blockerAttention ?? null}
                   successfulRunHandoff={issue.successfulRunHandoff ?? null}
                   scheduledRetry={issue.scheduledRetry ?? null}
-                  recoveryAction={issue.activeRecoveryAction ?? null}
+                  recoveryAction={issue.interruption?.responsibility === "system" || issue.activeRecoveryAction?.cause === "native_workspace_finalization_owner_unverified" ? null : issue.activeRecoveryAction ?? null}
                   onResolveRecoveryAction={handleResolveRecoveryAction}
                   onReissueIsolatedRecoveryAction={
                     handleReissueIsolatedRecoveryAction
@@ -8073,7 +8361,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
                   legacyRecoverySourceIssue={legacyRecoverySourceIssue}
                   comments={threadComments}
-                  commentsInitialLoading={commentsLoading}
+                  commentsInitialLoading={historyExpanded ? commentsLoading : recentComments.isLoading}
+                  historyExpanded={historyExpanded}
+                  onExpandHistory={expandHistory}
+                  hasEarlierMessages={recentComments.data?.hasMore ?? false}
                   initialHistoryPending={linkedCommentPending}
                   initialMetadataPending={
                     interactionsLoading ||
@@ -8081,13 +8372,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     workProductsLoading
                   }
                   initialHistoryError={
-                    commentsError ||
+                    (historyExpanded ? commentsError : recentComments.isError) ||
                     interactionsError ||
                     attachmentsError ||
                     workProductsError
                   }
                   onRetryInitialHistory={() => {
-                    void refetchComments();
+                    void (historyExpanded ? refetchComments() : recentComments.refetch());
                     void refetchInteractions();
                     void refetchAttachments();
                     void refetchWorkProducts();
@@ -8162,6 +8453,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   onImageUpload={handleCommentImageUpload}
                   onAttachImage={handleCommentAttachImage}
                   onInterruptQueued={handleInterruptQueuedRun}
+                  onRemoveCommentFromCache={removeCommentFromCache}
                   onDeleteComment={(commentId) =>
                     deleteComment
                       .mutateAsync({ commentId })
@@ -8217,6 +8509,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   onSubmitInteractionAnswers={handleSubmitInteractionAnswers}
                   onCancelInteraction={handleCancelInteraction}
                   onSkipInteraction={handleSkipInteraction}
+                  onDismissInteraction={async interaction => { await dismissInteraction.mutateAsync(interaction); }}
                   onSubmitInteractionVerdicts={handleSubmitInteractionVerdicts}
                   assigneeUserId={issue.assigneeUserId ?? null}
                   onResumeFromBacklog={
@@ -8231,7 +8524,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   }
                   resumeAssigneePending={resumeAssigneeAgent.isPending}
                   onTryAgainNoLiveExecutionPath={
-                    issue.status === "blocked" && issue.activeRecoveryAction
+                    issue.status === "blocked" && !issue.interruption && issue.activeRecoveryAction
                       ? handleTryAgainNoLiveExecutionPath
                       : undefined
                   }
@@ -8334,6 +8627,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             scope={treeControlScope}
             affectedCount={previewAffectedIssueCount}
             affectedAgentCount={previewAffectedAgentCount}
+            warnings={treeControlPreview?.warnings.map((warning) => warning.message)}
             loading={treeControlPreviewLoading}
             error={
               treeControlPreviewError
@@ -8355,7 +8649,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               executeTreeControl.mutate({
                 mode: treeControlMode,
                 scope: treeControlScope,
-                wakeAgents: treeControlWakeAgentsOnResume,
+                wakeAgents: treeControlWakeAgentsOnResume && previewAffectedAgentCount > 0,
               })
             }
           />
