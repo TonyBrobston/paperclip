@@ -148,14 +148,32 @@ entirely generic, with nothing fork-specific in it, so it was closed here on
 
 ## Refreshing from upstream
 
-Merge upstream into the fork. Never reset `master` to `upstream/master` or force
-push it, because that silently discards the table above.
+A refresh merges the latest upstream **release tag**, never `upstream/master`.
+The fork is "the latest upstream release plus our changes". Never reset `master`
+to `upstream/master` or force push it, because that silently discards the table
+above.
+
+Set `TAG` to the latest upstream release tag. The example below uses
+`v2026.1023.0`. If the selected tag is not found upstream, stop. Do not pick
+another tag.
 
 ```sh
-git fetch upstream
-git switch master
-git merge upstream/master
+TAG=v2026.1023.0
+git fetch upstream --tags || exit 1
+git ls-remote --exit-code --tags upstream "refs/tags/$TAG" || exit 1
+git switch master || exit 1
+if git merge-base --is-ancestor "$TAG" master; then
+  echo "master already contains $TAG; nothing to do."
+else
+  git merge "$TAG"
+fi
 ```
+
+**Never downgrade.** Do not reset, revert, or rebase `master` back to a release
+tag, even when `master` is already past it. The deployed server has run
+migrations from the newer upstream commits. As of 2026-10-29, `master` is past
+`v2026.1023.0` because earlier refreshes followed `upstream/master`. Refreshes
+are no-ops until a newer release ships.
 
 Then list what the fork still adds on top of upstream:
 
