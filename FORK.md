@@ -13,7 +13,6 @@ even when its pull request is open and green.
 | --- | --- | --- |
 | Use the fork’s `pr-trusted.yml@master` for pull request CI, so the workflow and source tree come from the same repository. Upstream’s moving recipe can require files absent from this older tree. Known residual: `pr-trusted.yml` still calls upstream’s `ci-routing.yml@master`; changing that reference is outside this fix | `fix/fork-pr-workflow` | fork-specific |
 | `PAPERCLIP_ALLOW_LOCAL_API_CALLS`: send agent-facing requests to the container's own listener, so agent runtimes behind an authenticating edge can still reach the API, the MCP gateways, and the GitHub credential broker | `feat/allow-local-runtime-api-calls`, merged by [#1](https://github.com/TonyBrobston/paperclip/pull/1) | not submitted |
-| Launch the installed web app in standalone display mode, so the Android PWA installs as an app instead of a shortcut. Also retargets `ui/src/lib/pwa-install-mode.test.ts`, whose upstream copy pins the old value | `fix/android-pwa-master`, merged by [#3](https://github.com/TonyBrobston/paperclip/pull/3) | open upstream as [#13756](https://github.com/paperclipai/paperclip/pull/13756) and [#13461](https://github.com/paperclipai/paperclip/pull/13461); drop this row once a release containing either is merged here |
 | CI that can pass under this owner, as three `if:` conditions and one `continue-on-error`: `docker.yml` and `agent-runtime-images.yml` skip off the canonical repository, because a fork cannot publish their images and nothing here pulls them, and `commitperclip-review.yml` skips the bot gates that need an upstream-only secret and stops a missing dependency graph from failing the run | `fix/fork-ci-green`, merged by [#10](https://github.com/TonyBrobston/paperclip/pull/10) | not submitted |
 
 Add a row when a change lands on `master`, and drop one once upstream ships the
@@ -40,23 +39,6 @@ have dropped one silently; upstream has already moved both functions between
 modules once. Both files are new here, with no upstream counterpart, so a merge
 cannot resolve them away the way it can a hunk inside a file upstream also
 edits.
-
-### Why the display mode is a fork-local change
-
-A browser installs a web app only when the manifest's `display` is
-`fullscreen`, `standalone`, or `minimal-ui`. Upstream ships `display: browser`,
-which Chrome reads as "this origin does not want to be an app": it offers a
-home-screen shortcut that opens in a tab and never an install. Upstream already
-contains the other half of the feature — the icon set, the service worker, and
-`StandaloneBrowserControls`, which only renders in a chromeless display mode —
-so the fork is ahead of upstream here rather than carrying a local preference.
-That is also why two upstream pull requests propose the same one-line change.
-
-Installing also needs `/site.webmanifest` and both `android-chrome-*.png` icons
-to be fetchable through whatever sits in front of the server. An
-authenticating edge that challenges those three requests blocks the install
-independently of this manifest value, and the symptom is identical. That part
-is deployment configuration, not a code change, so it is not in the table.
 
 ### Why the CI gates are a fork-local change
 
