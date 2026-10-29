@@ -13,7 +13,7 @@ even when its pull request is open and green.
 | --- | --- | --- |
 | Use the fork’s `pr-trusted.yml@master` for pull request CI, so the workflow and source tree come from the same repository. Upstream’s moving recipe can require files absent from this older tree. Known residual: `pr-trusted.yml` still calls upstream’s `ci-routing.yml@master`; changing that reference is outside this fix | `fix/fork-pr-workflow` | fork-specific |
 | `PAPERCLIP_ALLOW_LOCAL_API_CALLS`: send agent-facing requests to the container's own listener, so agent runtimes behind an authenticating edge can still reach the API, the MCP gateways, and the GitHub credential broker | `feat/allow-local-runtime-api-calls`, merged by [#1](https://github.com/TonyBrobston/paperclip/pull/1) | not submitted |
-| Launch the installed web app in standalone display mode, so the Android PWA installs as an app instead of a shortcut. Also retargets `ui/src/lib/pwa-install-mode.test.ts`, whose upstream copy pins the old value | `fix/android-pwa-master`, merged by [#3](https://github.com/TonyBrobston/paperclip/pull/3) | open upstream as [#13756](https://github.com/paperclipai/paperclip/pull/13756) and [#13461](https://github.com/paperclipai/paperclip/pull/13461); drop this row once either lands |
+| Launch the installed web app in standalone display mode, so the Android PWA installs as an app instead of a shortcut. Also retargets `ui/src/lib/pwa-install-mode.test.ts`, whose upstream copy pins the old value | `fix/android-pwa-master`, merged by [#3](https://github.com/TonyBrobston/paperclip/pull/3) | open upstream as [#13756](https://github.com/paperclipai/paperclip/pull/13756) and [#13461](https://github.com/paperclipai/paperclip/pull/13461); drop this row once a release containing either is merged here |
 | CI that can pass under this owner, as three `if:` conditions and one `continue-on-error`: `docker.yml` and `agent-runtime-images.yml` skip off the canonical repository, because a fork cannot publish their images and nothing here pulls them, and `commitperclip-review.yml` skips the bot gates that need an upstream-only secret and stops a missing dependency graph from failing the run | `fix/fork-ci-green`, merged by [#10](https://github.com/TonyBrobston/paperclip/pull/10) | not submitted |
 
 Add a row when a change lands on `master`, and drop one once upstream ships the
@@ -153,11 +153,14 @@ The fork is "the latest upstream release plus our changes". Never reset `master`
 to `upstream/master` or force push it, because that silently discards the table
 above.
 
-Set `TAG` to the latest upstream release tag. The example below uses
-`v2026.1023.0`. If the selected tag is not found upstream, stop. Do not pick
-another tag.
+Set `TAG` to upstream's GitHub **Latest** release, a bare `vYYYY.MDD.N` tag:
+`curl -s https://api.github.com/repos/paperclipai/paperclip/releases/latest | jq -r .tag_name`.
+Never use a `canary/`, `nightly/` or `beta/` tag, or whichever tag is newest.
+Those are pre-releases. The example below uses `v2026.1023.0`. If the selected
+tag is not found upstream, stop. Do not pick another tag.
 
 ```sh
+(
 TAG=v2026.1023.0
 git fetch upstream --tags || exit 1
 git ls-remote --exit-code --tags upstream "refs/tags/$TAG" || exit 1
@@ -167,6 +170,7 @@ if git merge-base --is-ancestor "$TAG" master; then
 else
   git merge "$TAG"
 fi
+)
 ```
 
 **Never downgrade.** Do not reset, revert, or rebase `master` back to a release
@@ -180,6 +184,10 @@ Then list what the fork still adds on top of upstream:
 ```sh
 git log --oneline --no-merges upstream/master..master
 ```
+
+Some release tags (for example `v2026.1012.0` and `v2026.824.1`) carry
+release-only commits that are not on `upstream/master`; those come from
+upstream, are not fork changes, and need no table row.
 
 Every change in the table must still be in that list. If one is missing, the
 merge dropped it; fix the merge before pushing.
