@@ -13,6 +13,7 @@ import type {
   PersistedNativeSession,
 } from "../contracts/native-session-backend.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
+import type { NativeRunRuntimeGrant } from "../contracts/runtime-context.js";
 import type {
   PrpEvent,
   PrpTerminalState,
@@ -377,11 +378,12 @@ function assertProviderSessionIdentity(
   stage: "session.open" | "session.recover",
 ): void {
   const ids = session.ids();
+  const external = provider === "openai_dot_mcp" || provider === "grok_bot_mcp" || provider === "muse_external";
   if (
     typeof ids.driverSessionId !== "string" ||
     ids.driverSessionId.trim().length === 0 ||
-    (provider !== "openai_dot_mcp" && (typeof ids.providerSessionId !== "string" || ids.providerSessionId.trim().length === 0))
-    || (provider === "openai_dot_mcp" && ids.providerSessionId !== null)
+    (!external && (typeof ids.providerSessionId !== "string" || ids.providerSessionId.trim().length === 0))
+    || (external && ids.providerSessionId !== null)
   ) {
     throw new Error(
       `provider_initialize_protocol_error: provider=${provider} stage=${stage} missing durable provider session identity`,
@@ -473,6 +475,7 @@ class HarnessNativeSession implements NativeSession {
 
   async attachRun(input: {
     identity: OpenNativeSessionInput["identity"];
+    currentRunGrant?: NativeRunRuntimeGrant;
   }): Promise<void> {
     this.#assertProtocolIntegrity();
     const currentIdentity = this.#input.identity;
@@ -488,7 +491,9 @@ class HarnessNativeSession implements NativeSession {
       throw new Error("native_session_multi_run_unavailable");
     }
     try {
-      await this.#session.attachRun({ runId: input.identity.runId });
+      await this.#session.attachRun({ runId: input.identity.runId,
+        ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
+      });
       this.#assertProtocolIntegrity();
     } catch (error) {
       this.#rethrowProtocolIntegrity(error);
@@ -774,6 +779,7 @@ class HarnessNativeSession implements NativeSession {
   }
 
   resolveRuntimeRequest(input: {
+    commandId?: string;
     requestId: string;
     turnId: string;
     resolution: Parameters<

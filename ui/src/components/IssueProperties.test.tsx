@@ -131,7 +131,8 @@ vi.mock("../lib/assignees", () => ({
   },
 }));
 
-vi.mock("./StatusIcon", () => ({
+vi.mock("./StatusIcon", async importOriginal => ({
+  ...await importOriginal<typeof import("./StatusIcon")>(),
   StatusIcon: ({ status, blockerAttention, className, glyphContainerClassName, size }: { status: string; blockerAttention?: Issue["blockerAttention"]; className?: string; glyphContainerClassName?: string; size?: string }) => (
     <span className={className} data-glyph-container-class={glyphContainerClassName} data-testid="status-icon" data-size={size} data-status-icon-state={blockerAttention?.state}>{status}</span>
   ),
@@ -141,7 +142,8 @@ vi.mock("./PriorityIcon", () => ({
   PriorityIcon: ({ priority }: { priority: string }) => <span>{priority}</span>,
 }));
 
-vi.mock("./Identity", () => ({
+vi.mock("./Identity", async importOriginal => ({
+  ...await importOriginal<typeof import("./Identity")>(),
   Identity: ({ name, shape }: { name: string; shape?: string }) => <span data-shape={shape ?? "circle"}>{name}</span>,
 }));
 
@@ -473,6 +475,31 @@ function renderPropertiesWithQueryClient(container: HTMLDivElement, props: Compo
 function renderProperties(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>) {
   const { root } = renderPropertiesWithQueryClient(container, props);
   return root;
+}
+
+function seniorProductEngineer() {
+  return {
+    id: "agent-1",
+    name: "Senior Product Engineer",
+    role: "engineer",
+    title: null,
+    status: "active",
+    adapterType: "codex_local",
+    icon: null,
+  };
+}
+
+function reviewPolicyStages(): Pick<IssueExecutionPolicy, "stages"> {
+  return {
+    stages: [
+      {
+        id: "00000000-0000-4000-8000-000000000010",
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
+      },
+    ],
+  };
 }
 
 describe("IssueProperties", () => {
@@ -1994,7 +2021,8 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("shows only the workspace detail link for non-default workspaces", async () => {
+  it.each([false, true])("shows the workspace detail link only when its destination is enabled: %s", async enabled => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: enabled });
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const root = renderProperties(container, {
       issue: createIssue({
@@ -2011,12 +2039,12 @@ describe("IssueProperties", () => {
     await flush();
     await flush();
 
-    const workspaceLink = Array.from(container.querySelectorAll("a")).find(
-      (link) => link.textContent?.trim() === "View workspace",
-    );
     expect(container.textContent).not.toContain("View workspace tasks");
-    expect(workspaceLink).not.toBeUndefined();
-    expect(workspaceLink?.getAttribute("href")).toBe("/execution-workspaces/workspace-1");
+    await vi.waitFor(() => {
+      const workspaceLink = Array.from(container.querySelectorAll("a")).find(link => link.textContent?.trim() === "View workspace");
+      if (enabled) expect(workspaceLink?.getAttribute("href")).toBe("/execution-workspaces/workspace-1");
+      else expect(workspaceLink).toBeUndefined();
+    });
 
     act(() => root.unmount());
   });
@@ -2239,15 +2267,7 @@ describe("IssueProperties", () => {
 
   it("hides model options when the issue uses the responsible default", async () => {
     mockAgentsApi.list.mockResolvedValue([
-      {
-        id: "agent-1",
-        name: "Senior Product Engineer",
-        role: "engineer",
-        title: null,
-        status: "active",
-        adapterType: "codex_local",
-        icon: null,
-      },
+      seniorProductEngineer(),
     ]);
 
     const root = renderProperties(container, {
@@ -2266,18 +2286,38 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("discovers Copilot overrides with the assignee connection and environment", async () => {
+    const binding = { provider: "github", method: "api_key", mode: "shared", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "33333333-3333-4333-8333-333333333333" };
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "Copilot", role: "engineer", status: "active",
+      adapterType: "paperclip_runner", defaultEnvironmentId: "daytona-1",
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+      runtimeConfig: { aiConnection: binding } }]);
+    mockAgentsApi.adapterModels.mockResolvedValue([{ id: "gpt-5.6-luna", label: "Copilot Luna" }]);
+    const { root, queryClient } = renderPropertiesWithQueryClient(container, {
+      issue: createIssue({ assigneeAgentId: "agent-1", assigneeAdapterOverrides: { adapterConfig: { model: "gpt-5.6-luna" } } }),
+      childIssues: [], onUpdate: vi.fn(), inline: true,
+    });
+    await flush();
+    await flush();
+    expect(mockAgentsApi.adapterModels).not.toHaveBeenCalled();
+    const modelTrigger = findRowTrigger(container, "Model");
+    expect(modelTrigger).toBeDefined();
+    await act(async () => modelTrigger!.click());
+    await waitForAssertion(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", {
+      environmentId: "daytona-1", provider: "acpx", acpxAgent: "copilot", agentId: "agent-1", aiConnection: binding,
+    }));
+    await act(async () => { await queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false }); });
+    expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(1);
+    await act(async () => modelTrigger!.click());
+    await act(async () => modelTrigger!.click());
+    await waitForAssertion(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(2));
+    act(() => root.unmount());
+  });
+
   it("edits existing custom assignee model options from the properties pane", async () => {
     const onUpdate = vi.fn();
     mockAgentsApi.list.mockResolvedValue([
-      {
-        id: "agent-1",
-        name: "Senior Product Engineer",
-        role: "engineer",
-        title: null,
-        status: "active",
-        adapterType: "codex_local",
-        icon: null,
-      },
+      seniorProductEngineer(),
     ]);
     mockAgentsApi.adapterModels.mockResolvedValue([
       { id: "gpt-6-astra", label: "gpt-6-astra" },
@@ -2391,15 +2431,7 @@ describe("IssueProperties", () => {
   it("clears existing assignee adapter overrides from the properties pane", async () => {
     const onUpdate = vi.fn();
     mockAgentsApi.list.mockResolvedValue([
-      {
-        id: "agent-1",
-        name: "Senior Product Engineer",
-        role: "engineer",
-        title: null,
-        status: "active",
-        adapterType: "codex_local",
-        icon: null,
-      },
+      seniorProductEngineer(),
     ]);
 
     const root = renderProperties(container, {
@@ -2663,16 +2695,7 @@ describe("IssueProperties", () => {
     const onUpdate = vi.fn();
     const root = renderProperties(container, {
       issue: createIssue({
-        executionPolicy: createExecutionPolicy({
-          stages: [
-            {
-              id: "00000000-0000-4000-8000-000000000010",
-              type: "review",
-              approvalsNeeded: 1,
-              participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
-            },
-          ],
-        }),
+        executionPolicy: createExecutionPolicy(reviewPolicyStages()),
       }),
       childIssues: [],
       onUpdate,
@@ -2721,16 +2744,7 @@ describe("IssueProperties", () => {
     const root = renderProperties(container, {
       issue: createIssue({
         status: "in_progress",
-        executionPolicy: createExecutionPolicy({
-          stages: [
-            {
-              id: "00000000-0000-4000-8000-000000000010",
-              type: "review",
-              approvalsNeeded: 1,
-              participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
-            },
-          ],
-        }),
+        executionPolicy: createExecutionPolicy(reviewPolicyStages()),
         executionState: createExecutionState(),
       }),
       childIssues: [],
@@ -2747,16 +2761,7 @@ describe("IssueProperties", () => {
     const root = renderProperties(container, {
       issue: createIssue({
         status: "in_review",
-        executionPolicy: createExecutionPolicy({
-          stages: [
-            {
-              id: "00000000-0000-4000-8000-000000000010",
-              type: "review",
-              approvalsNeeded: 1,
-              participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
-            },
-          ],
-        }),
+        executionPolicy: createExecutionPolicy(reviewPolicyStages()),
         executionState: createExecutionState({
           status: "pending",
           currentStageType: "review",
@@ -3606,7 +3611,7 @@ describe("IssueProperties", () => {
     }, ["workspaces.isolation"]);
     await flush();
     expect(container.querySelector('[data-property-label="Execution"]')).toBeNull();
-    expect(container.querySelector('a[href="/execution-workspaces/workspace-1"]')).not.toBeNull();
+    await vi.waitFor(() => expect(container.querySelector('a[href="/execution-workspaces/workspace-1"]')).not.toBeNull());
     expect(onUpdate).not.toHaveBeenCalled();
     act(() => root.unmount());
   });

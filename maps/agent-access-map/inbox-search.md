@@ -2,6 +2,8 @@
 
 Product map: [Inbox, decisions, and search](../feature-map/inbox-search.md).
 
+Feature ID: `inbox-search`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -10,6 +12,16 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `views`
+
+Capability ID: `inbox-search/views`.
+
+The issue-list API accepts optional `includeAgentCreatedTasks`; false restricts
+independent results to human creation before search/pagination. Omission retains
+existing agent/API behavior. `includeParticipatedTasks=true` requires a board user
+and retains only that authenticated user's existing participation as a creation
+visibility exception. Company/private-task access checks still apply. Collection
+preferences and hierarchy presentation are browser state, not additional authority.
+Source-reviewed behavior; live agent access verification remains separate.
 
 Review: `baseline`.
 
@@ -24,7 +36,12 @@ Agent access: `partial` — REST / native call_api; MCP inbox/task search.
 Policy: Own agent context; responsible-user inbox policy and explicit opt-in/grants for
 cross-user archive; decision policy separately. Automatic read cleanup does not
 count as user participation, including historical reader-attributed rows.
-Explicit user recovery decisions still count.
+Explicit user recovery decisions still count. Automatic creator attribution,
+synchronized comments, and manual routine runs do not count. Direct board/API
+comments, human assignment, and open addressed requests qualify. These admission
+rules do not grant task access.
+Historical questions and requests on closed tasks do not qualify. Request unread
+state uses the person's read or reply time, independent of automatic task updates.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L3952) at
 the reviewed commit above. The cleanup exclusion in
@@ -45,6 +62,8 @@ Gaps: Agent inbox and Mine support exist; board attention/unread/dismissal aggre
 is a separate user-only surface.
 
 ## `triage`
+
+Capability ID: `inbox-search/triage`.
 
 Review: `baseline`.
 
@@ -71,6 +90,8 @@ does not have equivalent agent semantics everywhere.
 
 ## `decisions`
 
+Capability ID: `inbox-search/decisions`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -96,6 +117,8 @@ separate board/resolver boundaries.
 
 ## `search`
 
+Capability ID: `inbox-search/search`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -119,3 +142,31 @@ remaining operations before qualifying the whole capability.
 
 Gaps: General company search and dedicated task search are different result sets; use
 the appropriate one.
+
+
+## `toasts`
+
+Capability ID: `inbox-search/toasts`.
+
+Review: `baseline`.
+
+API: `present` — GET /api/companies/{companyId}/events/ws (WebSocket upgrade); viewer-specific
+`toastEligible` metadata on authorized events. No notification mutation endpoint.
+
+Agent access: `not-applicable` — toast presentation is a human browser concern.
+Agent-authenticated event subscriptions retain authorization but do not qualify
+for human toasts. Agent task mutations may notify participating humans.
+
+Policy: Company membership and task/run read checks precede human participation
+checks. Creator, current human assignee, commenter, deliberate actor, or explicit
+user mention qualifies; agent ownership and responsible-user attribution alone do
+not. See [toast semantics](../../doc/TOASTS.md).
+
+Evidence: `source-only` — [socket projection](../../server/src/realtime/live-events-ws.ts)
+and [eligibility](../../server/src/realtime/task-toast-eligibility.ts).
+
+Verification: `not-run` — Connect two users and an agent; assert per-user eligibility without
+losing authorized cache updates. Deny revoked membership and private task access.
+Confirm relevance lookup failure yields a quiet authorized event.
+
+Gaps: Browser recipes and regression sources are not deployment acceptance proof.
