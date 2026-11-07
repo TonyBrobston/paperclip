@@ -67,6 +67,17 @@ test("the browser smoke command cannot suppress launch failures", () => {
 });
 
 for (const [level, target, replacement] of [
+  ["smoke step", "        run: |\n", "        continue-on-error: true\n        run: |\n"],
+  ["job", "    runs-on:", "    continue-on-error: true\n    runs-on:"],
+]) {
+  test(`browser checks reject continue-on-error on the ${level}`, () => {
+    const mutation = workflow.replace(target, replacement);
+    assert.notEqual(mutation, workflow);
+    assert.throws(() => assertBrowserJob(mutation), assert.AssertionError);
+  });
+}
+
+for (const [level, target, replacement] of [
   ["workflow", "permissions:", "concurrency: browser-check\npermissions:"],
   ["job", "    runs-on:", "    concurrency: browser-check\n    runs-on:"],
 ]) {
