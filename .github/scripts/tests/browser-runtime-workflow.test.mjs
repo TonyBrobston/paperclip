@@ -24,7 +24,7 @@ function assertNoDeploymentCoupling(workflow) {
 function assertBrowserJob(workflow) {
   const jobs = workflow.split("\njobs:\n")[1];
   assert.ok(jobs);
-  assert.doesNotMatch(jobs, /^\s*continue-on-error\s*:/m);
+  assert.doesNotMatch(jobs, /^[\s-]*continue-on-error\s*:/m);
   assert.deepEqual([...jobs.matchAll(/^  ([\w-]+):/gm)].map((match) => match[1]), ["browser-runtime"]);
   assert.match(jobs, /^    runs-on: ubuntu-latest$/m);
   const commands = jobs.match(/^        run: \|\n((?: {10}.*\n)*)/m)?.[1];
