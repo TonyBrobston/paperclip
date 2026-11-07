@@ -10,13 +10,13 @@ Agents can import the image-owned package:
 const { chromium } = require('/opt/paperclip-browser/node_modules/playwright');
 ```
 
-Use this package with its matching browser. An independently installed Playwright version can require a different browser revision. Update the exact dependency and lockfile together when upgrading. Keep the production Docker target, browser install layer and deployment checks during upstream merges.
+Use this package with its matching browser. An independently installed Playwright version can require a different browser revision. Update the exact dependency and lockfile together when upgrading. Keep the production Docker target, browser install layer and browser checks during upstream merges.
 
-## Deployment checks
+## Image and pull request checks
 
-Pull requests that change the image, browser files or deployment checks build the `browser-runtime` stage on a hosted GitHub runner and run its non-root smoke test. Master deployments require the same job before using the self-hosted deployment runner.
+The production image build runs the smoke test as `node` in the `browser-runtime` stage. A failure stops the build. The [Browser runtime workflow](../.github/workflows/browser-runtime.yml) also builds that stage and runs the smoke test as `node` on a hosted GitHub runner for pull requests that change `Dockerfile`, `docker/browser/**` or the workflow itself. It supports manual dispatch and does not run on pushes to master.
 
-The existing home-server GitHub workflow calls `scripts/deploy-home-server.sh`. The image build runs the smoke test as `node`. Deployment runs it again in a disposable container before recreation, then inside the healthy service through `gosu node`. It opens a loopback HTTP test page, verifies HTTP status, title and JavaScript execution, and closes the browser and server. A failure before recreation leaves the running container intact. A failure afterward fails the workflow and preserves the prior successful deployment marker.
+The smoke test opens a loopback HTTP test page, verifies HTTP status, title and JavaScript execution, and closes the browser and server. The [tbro-server image workflow](https://github.com/TonyBrobston/tbro-server/blob/master/.github/workflows/paperclip-image.yml) builds, verifies and publishes the image. Paperclip is updated by hand from the GHCR image.
 
 ```sh
 node /opt/paperclip-browser/smoke.cjs
@@ -26,8 +26,8 @@ Run this as the non-root agent user; it rejects root. It needs no external websi
 
 ## Recovery
 
-Restore the existing Paperclip data, secrets, database backup, Compose files and runner configuration as described in [home-server deployment](deploy-home-server.md). Deploy the reviewed fork revision through the existing workflow. A fresh image rebuild restores OS packages, pinned Playwright and Chromium; do not restore browser caches or run post-deployment package commands. The workflow must pass both health and browser checks before recording success.
+Restore the existing Paperclip data, secrets, database backup and Compose files as described in [home-server recovery](home-server-recovery.md). Update Paperclip by hand from the verified GHCR image. The image supplies OS packages, pinned Playwright and Chromium; do not restore browser caches or run post-deployment package commands. Confirm both health and browser checks pass after the update.
 
-For rollback follow the matching image/database recovery procedure in the deployment guide. Revisions before this browser layer do not provide the browser capability. Browser readiness does not approve any application PR: retain its exact-commit review, running-host permissions tests and merge approvals.
+For rollback, follow the matching image/database recovery procedure in the recovery guide. Revisions before this browser layer do not provide the browser capability. Browser readiness does not approve any application PR: retain its exact-commit review, running-host permissions tests and merge approvals.
 
 References: [Paperclip Docker](https://docs.paperclip.ing/reference/deploy/docker/), [Agent Browser skill](https://docs.paperclip.ing/reference/skills/optional/browser/agent-browser/), [Playwright Docker](https://playwright.dev/docs/docker).

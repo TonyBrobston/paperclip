@@ -3,14 +3,15 @@
 This is a fork of [paperclipai/paperclip](https://github.com/paperclipai/paperclip).
 It carries the changes this deployment needs before they land upstream.
 
-The deployment builds this repository's `master`, so every fork-local change
-belongs on `master`. A change that sits only on its own branch ships nothing,
-even when its pull request is open and green.
+The tbro-server image workflow builds, verifies and publishes this repository's
+`master` to GHCR. Paperclip is updated by hand from that image. Every fork-local
+change belongs on `master`; a change on an unmerged branch ships nothing.
 
 ## Fork-local changes on `master`
 
 | Change | Came from | Upstream |
 | --- | --- | --- |
+| Hosted browser image build and non-root smoke check on relevant pull requests and manual dispatch; server image updates are manual. Recovery guidance is in `doc/home-server-recovery.md` | `chore/remove-home-server-deploy` | fork-specific |
 | Use the fork’s `pr-trusted.yml@master` for pull request CI, so the workflow and source tree come from the same repository. Upstream’s moving recipe can require files absent from this older tree. Known residual: `pr-trusted.yml` still calls upstream’s `ci-routing.yml@master`; changing that reference is outside this fix | `fix/fork-pr-workflow` | fork-specific |
 | `PAPERCLIP_ALLOW_LOCAL_API_CALLS`: send agent-facing requests to the container's own listener, so agent runtimes behind an authenticating edge can still reach the API, the MCP gateways, and the GitHub credential broker | `feat/allow-local-runtime-api-calls`, merged by [#1](https://github.com/TonyBrobston/paperclip/pull/1) | not submitted |
 | CI that can pass under this owner, as three `if:` conditions and one `continue-on-error`: `docker.yml` and `agent-runtime-images.yml` skip off the canonical repository, because a fork cannot publish their images and nothing here pulls them, and `commitperclip-review.yml` skips the bot gates that need an upstream-only secret and stops a missing dependency graph from failing the run | `fix/fork-ci-green`, merged by [#10](https://github.com/TonyBrobston/paperclip/pull/10) | not submitted |
@@ -65,9 +66,12 @@ a step, rewriting the two upstream-owned test files that pin the raw
 interpolation, and — the part that settles it — switching *on* image publishing
 this fork has never done: two architecture images, a manifest list and a
 `mode=max` build cache pushed to `ghcr.io/tonybrobston/paperclip` on every
-`master` push, which nothing consumes, because the self-hosted deployment
-builds the `paperclip` service from source as `tbro/paperclip:local`. The fork
-does not want these images; it only wants to stop being mailed about them. So
+`master` push, which nothing consumes. Instead, tbro-server's
+[`paperclip-image.yml`](https://github.com/TonyBrobston/tbro-server/blob/master/.github/workflows/paperclip-image.yml)
+builds the image on GitHub, and the server is updated by hand as
+[`PAPERCLIP-IMAGES.md`](https://github.com/TonyBrobston/tbro-server/blob/master/home-automation/PAPERCLIP-IMAGES.md)
+describes. The fork does not want the canonical workflow's images; it only
+wants to stop being mailed about them. So
 `build-and-push` skips off the canonical repository and `merge-and-push` and
 `promote_canary_channel` skip with it through `needs:`. That is one `if:` and
 no test churn, and it leaves `docker.yml`'s body byte-identical to upstream.
@@ -247,16 +251,16 @@ went merged along with it.
 
 ### Merging is not deploying
 
-Pushing `master` changes nothing that is running. The deployment builds this
-repository from its own checkout, so a refresh is live only after that checkout
-is pulled and the image is rebuilt. The rebuild runs where the deployment lives,
-which means an agent cannot do it.
+Pushing `master` changes nothing that is running. tbro-server's
+[`paperclip-image.yml`](https://github.com/TonyBrobston/tbro-server/blob/master/.github/workflows/paperclip-image.yml)
+builds the image on GitHub. A refresh is live only after the operator updates
+the server by hand as tbro-server's
+[`PAPERCLIP-IMAGES.md`](https://github.com/TonyBrobston/tbro-server/blob/master/home-automation/PAPERCLIP-IMAGES.md)
+describes.
 
-So a refresh is not finished when `master` moves. It is finished when the
-operator has been told to run the rebuild. Notify the operator in the same pass
-that pushes `master`, and put the rebuild command in that message rather than
-only in a task comment. The deployment repository's own `PAPERCLIP-FORK.md`
-holds the command; it is deployment configuration, so it does not belong here.
+When `master` moves, notify the operator that an image build and manual server
+update are needed, and include that guide's link. The image and Compose
+commands belong in the deployment repository.
 
 Two checks answer "is the refresh actually live?" without host access, against
 the running server's own API:
