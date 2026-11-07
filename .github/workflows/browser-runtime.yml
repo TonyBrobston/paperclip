@@ -1,0 +1,25 @@
+name: Browser runtime
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - docker/browser/**
+      - .github/workflows/browser-runtime.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Build browser runtime and verify non-root launch
+        run: |
+          docker build --target browser-runtime -t paperclip-browser-check .
+          docker run --rm --network none --user node -e HOME=/tmp --entrypoint node paperclip-browser-check /opt/paperclip-browser/smoke.cjs
