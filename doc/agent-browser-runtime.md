@@ -14,9 +14,7 @@ Use this package with its matching browser. An independently installed Playwrigh
 
 ## Deployment checks
 
-Pull requests that change the image, browser files or deployment checks build the `browser-runtime` stage on a hosted GitHub runner and run its non-root smoke test. Master deployments require the same job before using the self-hosted deployment runner.
-
-The existing home-server GitHub workflow calls `scripts/deploy-home-server.sh`. The image build runs the smoke test as `node`. Deployment runs it again in a disposable container before recreation, then inside the healthy service through `gosu node`. It opens a loopback HTTP test page, verifies HTTP status, title and JavaScript execution, and closes the browser and server. A failure before recreation leaves the running container intact. A failure afterward fails the workflow and preserves the prior successful deployment marker.
+The production image build runs the smoke test as `node` in the `browser-runtime` stage. A failure stops the build.
 
 ```sh
 node /opt/paperclip-browser/smoke.cjs
@@ -26,8 +24,8 @@ Run this as the non-root agent user; it rejects root. It needs no external websi
 
 ## Recovery
 
-Restore the existing Paperclip data, secrets, database backup, Compose files and runner configuration as described in [home-server deployment](deploy-home-server.md). Deploy the reviewed fork revision through the existing workflow. A fresh image rebuild restores OS packages, pinned Playwright and Chromium; do not restore browser caches or run post-deployment package commands. The workflow must pass both health and browser checks before recording success.
+Restore the existing Paperclip data, secrets, database backup and Compose files. Deploy the reviewed fork revision from a fresh image build. A fresh image rebuild restores OS packages, pinned Playwright and Chromium; do not restore browser caches or run post-deployment package commands. Confirm both health and browser checks pass after deployment.
 
-For rollback follow the matching image/database recovery procedure in the deployment guide. Revisions before this browser layer do not provide the browser capability. Browser readiness does not approve any application PR: retain its exact-commit review, running-host permissions tests and merge approvals.
+For rollback, restore the matching image and database backup together. Revisions before this browser layer do not provide the browser capability. Browser readiness does not approve any application PR: retain its exact-commit review, running-host permissions tests and merge approvals.
 
 References: [Paperclip Docker](https://docs.paperclip.ing/reference/deploy/docker/), [Agent Browser skill](https://docs.paperclip.ing/reference/skills/optional/browser/agent-browser/), [Playwright Docker](https://playwright.dev/docs/docker).
