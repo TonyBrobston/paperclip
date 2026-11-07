@@ -76,6 +76,8 @@ test("the browser smoke command cannot suppress launch failures", () => {
 });
 
 for (const [level, target, replacement] of [
+  ["smoke step with its first key", "      - name:", "      - continue-on-error: true\n        name:"],
+  ["checkout step with its first key", "      - uses:", "      - continue-on-error: true\n        uses:"],
   ["smoke step", "        run: |\n", "        continue-on-error: true\n        run: |\n"],
   ["job", "    runs-on:", "    continue-on-error: true\n    runs-on:"],
 ]) {
