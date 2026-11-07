@@ -279,7 +279,7 @@ curl -s -o /dev/null -w '%{http_code}\n' \
   "$API/companies/$PAPERCLIP_COMPANY_ID/decision-model"
 ```
 
-A `processStartedAt` earlier than the merge commit's date means the rebuild has
+A `processStartedAt` earlier than the merge commit's date means the update has
 not happened. The second check is the stronger one, because a bare restart would
 move `processStartedAt` without picking up new code: pick any route the refresh
 added (`git diff --diff-filter=A --name-only <deployed-sha> master -- server/src/routes/`)
@@ -293,9 +293,9 @@ the next day the server still reported `processStartedAt` of
 hours after the merge, because the deploy step existed only as a line in a task
 comment.
 
-### The rebuild is safe to run while agents are working
+### The update is safe to run while agents are working
 
-The rebuild replaces the running container, so the server process is destroyed
+The update replaces the running container, so the server process is destroyed
 and every in-flight heartbeat run dies with it. That sounds like a reason to
 wait for a quiet moment. It is not, and waiting is the worse trade: an
 undeployed refresh sits for hours, while an interrupted run is a case the server
@@ -317,7 +317,7 @@ That bounded recovery covers `todo` and `in_progress`. An issue parked in
 issue monitor or a pending interaction, which are database rows and so are
 indifferent to the process being replaced.
 
-One consequence for whoever asks for the rebuild: **the run that is watching for
+One consequence for whoever asks for the update: **the run that is watching for
 it cannot be the run that confirms it.** Both probes above flip at the moment the
 process is replaced, which is the same moment the watching run is destroyed. So
 "I will confirm the instant it goes live" is a promise no single run can keep —
@@ -334,9 +334,9 @@ git fetch origin
 git log --oneline --no-merges origin/master..origin/<branch>
 ```
 
-Empty output means the deployment already builds everything that branch adds.
+Empty output means the next image build from `master` will include everything that branch adds.
 A merged pull request is the usual reason it comes out empty, but it is the
-commit range, not the pull request state, that says what the deployment builds.
+commit range, not the pull request state, that says what the next image build includes.
 
 The stricter ancestry form asks whether the branch *tip* is in `master`:
 
