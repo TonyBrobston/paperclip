@@ -3266,23 +3266,3 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
-
-## Install on Android
-
-Serve Paperclip over HTTPS with a certificate trusted by the phone. Open the
-instance in Chrome on Android, then use the browser menu's **Add to Home screen**
-(or **Install app**) action and select **Install** when offered. Launch Paperclip
-from the installed app icon. It opens in its own window without the browser tab
-bar. Normal browser visits still work.
-
-If an existing home-screen shortcut still opens a browser tab after deployment,
-remove that shortcut, reload the site, and install it again. Chrome may take time
-to update an existing installation's manifest. A plain HTTP LAN address does not
-meet the secure-context requirement.
-
-To verify a deployment, use Chrome DevTools **Application > Manifest**. Confirm
-that `/site.webmanifest` has `display: standalone`, its start URL and scope are
-`/`, and both Android icons load. On Android, launch the installed app and check
-that company and issue navigation stay in the app window. Login and reload should
-continue to work. Agent actions still require a connection to the server; this
-installation setting does not add offline task execution.

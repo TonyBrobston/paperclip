@@ -5,22 +5,17 @@ import { describe, expect, it } from "vitest";
 
 const uiRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
-function readManifest(): { display?: string; icons?: { sizes?: string; type?: string }[] } {
-  return JSON.parse(readFileSync(resolve(uiRoot, "public/site.webmanifest"), "utf8"));
-}
-
 describe("PWA install mode", () => {
-  it("launches home-screen installs without browser controls", () => {
-    expect(readManifest().display).toBe("standalone");
-  });
+  it("opens home-screen launches with browser controls visible", () => {
+    const manifest = JSON.parse(readFileSync(resolve(uiRoot, "public/site.webmanifest"), "utf8")) as {
+      display?: string;
+    };
+    const html = readFileSync(resolve(uiRoot, "index.html"), "utf8");
 
-  it("declares the icon sizes browsers require to offer an install", () => {
-    const declaredPngSizes = (readManifest().icons ?? [])
-      .filter((icon) => icon.type === "image/png")
-      .map((icon) => icon.sizes);
-
-    expect(declaredPngSizes).toContain("192x192");
-    expect(declaredPngSizes).toContain("512x512");
+    expect(manifest.display).toBe("browser");
+    expect(html).not.toContain('name="mobile-web-app-capable"');
+    expect(html).not.toContain('name="apple-mobile-web-app-capable"');
+    expect(html).not.toContain('name="apple-mobile-web-app-status-bar-style"');
   });
 
   it("fetches the manifest with credentials so authenticating proxies can serve it", () => {
