@@ -5,12 +5,16 @@ import test from "node:test";
 const workflowUrl = new URL("../../workflows/browser-runtime.yml", import.meta.url);
 
 function assertBrowserTriggers(workflow) {
-  assert.match(workflow, /^  pull_request:\n    paths:\n/m);
+  const pullRequest = workflow.match(/^  pull_request:\n((?: {4}.*\n|\n)*)/m)?.[1];
+  assert.ok(pullRequest);
+  const paths = pullRequest.match(/^    paths:\n((?: {6}.*\n)*)/m)?.[1];
+  assert.ok(paths);
   for (const path of ["Dockerfile", "docker/browser/**", ".github/workflows/browser-runtime.yml"]) {
-    assert.ok(workflow.includes(`      - ${path}\n`), `Missing PR path: ${path}`);
+    assert.ok(paths.includes(`      - ${path}\n`), `Missing PR path: ${path}`);
   }
   assert.match(workflow, /^  workflow_dispatch:/m);
-  assert.doesNotMatch(workflow, /^  push:|^concurrency:|self-hosted/m);
+  assert.doesNotMatch(workflow, /^  push:|^\s*concurrency\s*:|self-hosted/m);
+  assert.ok(!workflow.includes("PAPERCLIP_COMPOSE_PROJECT_NAME"));
 }
 
 function assertBrowserJob(workflow) {
@@ -18,16 +22,21 @@ function assertBrowserJob(workflow) {
   assert.ok(jobs);
   assert.deepEqual([...jobs.matchAll(/^  ([\w-]+):/gm)].map((match) => match[1]), ["browser-runtime"]);
   assert.match(jobs, /^    runs-on: ubuntu-latest$/m);
-  assert.ok(jobs.includes("docker build --target browser-runtime -t paperclip-browser-check ."));
-  assert.ok(jobs.includes("docker run --rm --network none --user node -e HOME=/tmp --entrypoint node paperclip-browser-check /opt/paperclip-browser/smoke.cjs"));
+  const commands = jobs.match(/^        run: \|\n((?: {10}.*\n)*)/m)?.[1];
+  assert.ok(commands);
+  assert.deepEqual(commands.trim().split("\n").map((command) => command.trim()), [
+    "docker build --target browser-runtime -t paperclip-browser-check .",
+    "docker run --rm --network none --user node -e HOME=/tmp --entrypoint node paperclip-browser-check /opt/paperclip-browser/smoke.cjs",
+  ]);
 }
 
 function assertBrowserPermissions(workflow) {
   assert.match(workflow, /uses: actions\/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n/);
   assert.match(workflow, /persist-credentials: false/);
-  assert.match(workflow, /^permissions:\n  contents: read\n/m);
+  const permissions = workflow.match(/^permissions:\n((?:[ \t].*\n|\n)*)/m)?.[1];
+  assert.equal(permissions?.trim(), "contents: read");
+  assert.equal([...workflow.matchAll(/^\s*permissions\s*:/gm)].length, 1);
 }
-
 
 const workflow = readFileSync(workflowUrl, "utf8");
 

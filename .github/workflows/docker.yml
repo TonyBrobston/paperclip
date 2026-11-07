@@ -57,8 +57,9 @@ jobs:
   # available to self-hosted installations and downstream image composers.
   build-and-push:
     # Images are published for the canonical organisation only. A fork has no
-    # consumer for them — the self-hosted deployment builds the `paperclip`
-    # service from source — and it cannot publish them anyway: the
+    # consumer for them — tbro-server's paperclip-image.yml builds on GitHub
+    # and PAPERCLIP-IMAGES.md describes manual server updates — and it cannot
+    # publish them anyway: the
     # `github.repository` slug interpolated below carries the owner's display
     # casing, so under a mixed-case owner buildx rejects every reference with
     # "repository name (Owner/paperclip) must be lowercase" and kills the
