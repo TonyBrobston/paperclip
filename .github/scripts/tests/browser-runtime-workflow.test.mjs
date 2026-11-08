@@ -13,13 +13,18 @@ function assertBrowserTriggers(workflow) {
     assert.ok(paths.includes(`      - ${path}\n`), `Missing PR path: ${path}`);
   }
   assert.match(workflow, /^  workflow_dispatch:/m);
-  assert.doesNotMatch(workflow, /^  push:|^\s*concurrency\s*:|self-hosted/m);
+  assert.doesNotMatch(workflow, /^  push:/m);
+}
+
+function assertNoDeploymentCoupling(workflow) {
+  assert.doesNotMatch(workflow, /^\s*concurrency\s*:|self-hosted/m);
   assert.ok(!workflow.includes("PAPERCLIP_COMPOSE_PROJECT_NAME"));
 }
 
 function assertBrowserJob(workflow) {
   const jobs = workflow.split("\njobs:\n")[1];
   assert.ok(jobs);
+  assert.doesNotMatch(jobs, /^[\s-]*continue-on-error\s*:/m);
   assert.deepEqual([...jobs.matchAll(/^  ([\w-]+):/gm)].map((match) => match[1]), ["browser-runtime"]);
   assert.match(jobs, /^    runs-on: ubuntu-latest$/m);
   const commands = jobs.match(/^        run: \|\n((?: {10}.*\n)*)/m)?.[1];
@@ -42,6 +47,10 @@ const workflow = readFileSync(workflowUrl, "utf8");
 
 test("browser image changes keep a pull request check and manual dispatch", () => {
   assertBrowserTriggers(workflow);
+});
+
+test("browser checks have no deployment coupling", () => {
+  assertNoDeploymentCoupling(workflow);
 });
 
 test("the hosted browser check builds and launches Chromium as the agent user", () => {
@@ -67,17 +76,30 @@ test("the browser smoke command cannot suppress launch failures", () => {
 });
 
 for (const [level, target, replacement] of [
+  ["smoke step with its first key", "      - name:", "      - continue-on-error: true\n        name:"],
+  ["checkout step with its first key", "      - uses:", "      - continue-on-error: true\n        uses:"],
+  ["smoke step", "        run: |\n", "        continue-on-error: true\n        run: |\n"],
+  ["job", "    runs-on:", "    continue-on-error: true\n    runs-on:"],
+]) {
+  test(`browser checks reject continue-on-error on the ${level}`, () => {
+    const mutation = workflow.replace(target, replacement);
+    assert.notEqual(mutation, workflow);
+    assert.throws(() => assertBrowserJob(mutation), assert.AssertionError);
+  });
+}
+
+for (const [level, target, replacement] of [
   ["workflow", "permissions:", "concurrency: browser-check\npermissions:"],
   ["job", "    runs-on:", "    concurrency: browser-check\n    runs-on:"],
 ]) {
   test(`browser checks reject ${level} concurrency`, () => {
     const mutation = workflow.replace(target, replacement);
     assert.notEqual(mutation, workflow);
-    assert.throws(() => assertBrowserTriggers(mutation), assert.AssertionError);
+    assert.throws(() => assertNoDeploymentCoupling(mutation), assert.AssertionError);
   });
 }
 
 test("browser checks reject deployment project configuration", () => {
   const mutation = workflow.replace("    runs-on:", "    env:\n      PAPERCLIP_COMPOSE_PROJECT_NAME: paperclip\n    runs-on:");
-  assert.throws(() => assertBrowserTriggers(mutation), assert.AssertionError);
+  assert.throws(() => assertNoDeploymentCoupling(mutation), assert.AssertionError);
 });
